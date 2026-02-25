@@ -9,6 +9,7 @@
 #include <QMap>
 #include "LTR/ltrapi.h"
 #include "LTR/ltr11api.h"
+#include "LTR/ltr114api.h"
 #include "crate.h"
 #include <QMainWindow>
 #include <memory>
@@ -19,6 +20,7 @@ QT_END_NAMESPACE
 
 class Crate;
 class LTR11;
+class LTR114;
 
 class MainWindow : public QMainWindow
 {
@@ -38,6 +40,7 @@ private:
     Ui::MainWindow *ui;
     std::unique_ptr<Crate> m_crate;        // управление крейтом
     std::unique_ptr<LTR11> m_ltr11;        // управление модулем LTR11
+    std::unique_ptr<LTR114> m_ltr114;      // управление модулем LTR114
 
     QListWidget* modulesList;
     QTextEdit* infoText;
@@ -54,6 +57,8 @@ private:
     void appendInfo(const QString &msg, bool isError = false);
     QWidget* createModuleItemWidget(int slot, const QString &name, bool ok);
     void setModuleStatus(int slot, bool ok);
+    void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
+    void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
 };
 
 #endif // MAINWINDOW_H
