@@ -1,5 +1,6 @@
 #include "crate.h"
 #include "ltr11.h"
+#include "ltr114.h"
 #include <QDebug>
 #include <cstring>
 
@@ -113,6 +114,12 @@ std::unique_ptr<Module> Crate::create_module(int slot) const
     //  потом расширить для других типов модулей
     if (moduleId == LTR_MID_LTR11) {
         auto module = std::make_unique<LTR11>();
+        if (module->open(m_serial_number, slot))
+            return module;
+    }
+
+    if (moduleId == LTR_MID_LTR114) {
+        auto module = std::make_unique<LTR114>();
         if (module->open(m_serial_number, slot))
             return module;
     }
