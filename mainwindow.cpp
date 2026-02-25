@@ -10,6 +10,7 @@
 #include <numeric>
 
 #include "ltr11.h"
+#include "ltr114.h"
 
 QString MainWindow::module_name(WORD mid)
 {
@@ -41,13 +42,11 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
-    // сохраняем вызов setupUi чтобы проект не ломался, но интерфейс дополним программно
     ui->setupUi(this);
 
-    init_ui_replace(); // создаём список модулей + информационный виджет
+    init_ui_replace();
     appendInfo("Приложение запущено.");
 
-    // стартуем инициализацию LTR (всё логируется в infoText)
     init_ltr();
 }
 
@@ -58,22 +57,18 @@ MainWindow::~MainWindow()
 
 void MainWindow::init_ui_replace()
 {
-    // Если в .ui есть centralWidget, используем его, иначе создаём
     QWidget* central = ui->centralwidget ? ui->centralwidget : new QWidget(this);
     setCentralWidget(central);
 
-    // основная горизонтальная компоновка: слева — список модулей, справа — лог/информация
-    QHBoxLayout* mainLay = new QHBoxLayout;
-    central->setLayout(mainLay);
+    QHBoxLayout* main_lay = new QHBoxLayout;
+    central->setLayout(main_lay);
 
-    // Список модулей
     modulesList = new QListWidget(this);
     modulesList->setMinimumWidth(320);
     modulesList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     modulesList->setSelectionMode(QAbstractItemView::NoSelection);
     modulesList->setFocusPolicy(Qt::NoFocus);
 
-    // Информационное окно: read-only, моноширинный шрифт будет удобен для логов
     infoText = new QTextEdit(this);
     infoText->setReadOnly(true);
     infoText->setAcceptRichText(false);
@@ -82,11 +77,9 @@ void MainWindow::init_ui_replace()
     f.setStyleHint(QFont::Monospace);
     infoText->setFont(f);
 
-    // компоновка
-    mainLay->addWidget(modulesList, 0); // левее
-    mainLay->addWidget(infoText, 1);    // правее (растягивается)
+    main_lay->addWidget(modulesList, 0);
+    main_lay->addWidget(infoText, 1);
 
-    // опционально — заголовок в info
     appendInfo("Информационный виджет создан.");
 }
 
@@ -95,7 +88,6 @@ void MainWindow::appendInfo(const QString &msg, bool isError)
     QString time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     QString line = QString("[%1] %2").arg(time, msg);
     if (isError) {
-        // красный цвет для ошибок
         infoText->setTextColor(Qt::red);
         infoText->append(line);
         infoText->setTextColor(Qt::black);
@@ -103,7 +95,6 @@ void MainWindow::appendInfo(const QString &msg, bool isError)
         infoText->append(line);
     }
 
-    // и в debug
     qDebug() << line;
 }
 
@@ -113,10 +104,10 @@ QWidget* MainWindow::createModuleItemWidget(int slot, const QString &name, bool 
     QHBoxLayout* lay = new QHBoxLayout(w);
     lay->setContentsMargins(6, 3, 6, 3);
 
-    QLabel* slotLabel = new QLabel(QString("Слот %1").arg(slot));
-    slotLabel->setMinimumWidth(70);
-    QLabel* nameLabel = new QLabel(name);
-    nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QLabel* slot_label = new QLabel(QString("Слот %1").arg(slot));
+    slot_label->setMinimumWidth(70);
+    QLabel* name_label = new QLabel(name);
+    name_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     QLabel* indicator = new QLabel;
     indicator->setFixedSize(14, 14);
@@ -124,8 +115,8 @@ QWidget* MainWindow::createModuleItemWidget(int slot, const QString &name, bool 
     indicator->setStyleSheet(QString("border-radius:7px; background-color: %1;")
                                  .arg(ok ? "green" : "red"));
 
-    lay->addWidget(slotLabel);
-    lay->addWidget(nameLabel, 1);
+    lay->addWidget(slot_label);
+    lay->addWidget(name_label, 1);
     lay->addWidget(indicator);
     return w;
 }
@@ -141,149 +132,58 @@ void MainWindow::setModuleStatus(int slot, bool ok)
     }
 }
 
-void MainWindow::init_ltr()
+void MainWindow::run_ltr11_module(const QString& crate_sn, int ltr11_slot)
 {
-    appendInfo("Начало поиска крейтов...");
-
-    // Получаем список крейтов
-    auto crates = Crate::enumerate_crates();
-    if (crates.isEmpty()) {
-        appendInfo("Нет подключенных крейтов", true);
-        return;
-    }
-
-    appendInfo(QString("Найдено %1 крейт(ов):").arg(crates.size()));
-    for (const auto& s : crates) appendInfo(QString("  %1").arg(s));
-
-    // Открываем первый крейт
-    QString crateSn = crates.first();
-    appendInfo(QString("Открываем крейт SN: %1").arg(crateSn));
-
-    m_crate = std::make_unique<Crate>(crateSn);
-    if (!m_crate->is_open()) {
-        appendInfo("Не удалось открыть крейт", true);
-        m_crate.reset();
-        return;
-    }
-    appendInfo("Крейт успешно открыт.");
-
-    // Получаем список модулей
-    auto modules = m_crate->get_modules();
-    if (modules.isEmpty()) {
-        appendInfo("В крейте нет модулей", true);
-        return;
-    }
-
-    WORD slot_count = m_crate->get_slot_count();
-    appendInfo(QString("Вместимость крейта: %1 слотов").arg(slot_count));
-
-    // Для наглядности создаём элементы списка для всех слотов как минимум
-    // заполнены значениями "EMPTY" по умолчанию
-    for (int s = 0; s < slot_count; ++s) {
-        QWidget* w = createModuleItemWidget(s, "EMPTY", false);
-        QListWidgetItem* it = new QListWidgetItem(modulesList);
-        it->setSizeHint(w->sizeHint());
-        modulesList->addItem(it);
-        modulesList->setItemWidget(it, w);
-        moduleWidgets.insert(s, w);
-    }
-
-    // Обновляем информационный блок про модули
-    appendInfo("Список модулей в крейте:");
-    for (const auto& mod : modules) {
-        int slot = mod.first;
-        WORD mid = mod.second;
-        QString name = module_name(mid);
-        appendInfo(QString("  слот %1: %2").arg(slot).arg(name));
-        // обновляем виджет указанного слота
-        // создаём новый виджет и заменяем старый элемент в списке
-        // (проще - обновим существующий)
-        QWidget* w = moduleWidgets.value(slot, nullptr);
-        if (w) {
-            // обновка: найдём label с именем (мы ставили второй виджет) - проще: заменим весь itemWidget
-            QWidget* newW = createModuleItemWidget(slot, name, true);
-            // найдём соответствующий QListWidgetItem по индексу
-            QListWidgetItem* item = modulesList->item(slot);
-            if (item) {
-                modulesList->setItemWidget(item, newW);
-                moduleWidgets[slot] = newW;
-            }
-        }
-    }
-
-    // Ищем LTR11 среди модулей
-    int ltr11Slot = -1;
-    for (const auto& mod : modules) {
-        if (mod.second == LTR_MID_LTR11) {
-            ltr11Slot = mod.first;
-            break;
-        }
-    }
-    if (ltr11Slot == -1) {
-        appendInfo("Модуль LTR11 не найден", true);
-        return;
-    } else {
-        appendInfo(QString("Модуль LTR11 найден в слоте %1").arg(ltr11Slot));
-        setModuleStatus(ltr11Slot, true); // индикатор зелёный
-    }
-
-    // Создаём и открываем LTR11
     m_ltr11 = std::make_unique<LTR11>();
-    appendInfo(QString("Открываем LTR11 в слоте %1...").arg(ltr11Slot));
-    if (!m_ltr11->open(crateSn, ltr11Slot)) {
-        appendInfo(QString("Не удалось открыть LTR11 в слоте %1").arg(ltr11Slot), true);
+    appendInfo(QString("Открываем LTR11 в слоте %1...").arg(ltr11_slot));
+    if (!m_ltr11->open(crate_sn, ltr11_slot)) {
+        appendInfo(QString("Не удалось открыть LTR11 в слоте %1").arg(ltr11_slot), true);
         m_ltr11.reset();
-        setModuleStatus(ltr11Slot, false);
+        setModuleStatus(ltr11_slot, false);
         return;
     }
-    appendInfo("LTR11 успешно открыт.");
-    setModuleStatus(ltr11Slot, true);
 
-    // Получаем конфигурацию
+    appendInfo("LTR11 успешно открыт.");
+    setModuleStatus(ltr11_slot, true);
+
     if (!m_ltr11->get_config()) {
         appendInfo("Не удалось получить конфигурацию LTR11", true);
         return;
     }
-    appendInfo(QString("Модуль: %1  SN: %2").arg(m_ltr11->module_name(), m_ltr11->module_serial()));
+    appendInfo(QString("LTR11: %1  SN: %2").arg(m_ltr11->module_name(), m_ltr11->module_serial()));
 
-    // Настраиваем параметры
     m_ltr11->set_start_mode(LTR11_STARTADCMODE_INT);
     m_ltr11->set_input_mode(LTR11_INPMODE_INT);
-    BYTE chTbl[] = { (0 << 6) | (0 << 4) | (0 << 0) }; // пример конфигурации
-    m_ltr11->set_logical_channels(1, chTbl);
-    m_ltr11->set_ADC_rate(1, 149);   // prescaler=1, divider=149
-    // m_ltr11->set_adc_mode(LTR11_ADCMODE_ACQ);
+    BYTE ch_tbl[] = { static_cast<BYTE>((0 << 6) | (0 << 4) | (0 << 0)) };
+    m_ltr11->set_logical_channels(1, ch_tbl);
+    m_ltr11->set_ADC_rate(1, 149);
 
     if (!m_ltr11->apply_config()) {
-        appendInfo("Не удалось применить настройки АЦП", true);
+        appendInfo("Не удалось применить настройки АЦП LTR11", true);
         return;
     }
-    appendInfo(QString("Параметры АЦП установлены, частота канала: %1 кГц").arg(m_ltr11->channel_rate()));
+    appendInfo(QString("LTR11: параметры АЦП установлены, частота канала: %1 кГц").arg(m_ltr11->channel_rate()));
 
-    // Запуск сбора
     if (!m_ltr11->start()) {
-        appendInfo("Не удалось запустить сбор данных", true);
+        appendInfo("LTR11: не удалось запустить сбор данных", true);
         return;
     }
-    appendInfo("Сбор данных запущен.");
+    appendInfo("LTR11: сбор данных запущен.");
 
-    // Приём данных
     int error = 0;
     QVector<DWORD> data = m_ltr11->receive_data(3000, &error);
     if (error != 0) {
-        appendInfo(QString("Ошибка приёма данных: %1").arg(error), true);
-        appendInfo("Сбор остановлен из-за ошибки.");
-        // отмечаем модуль как проблемный
-        setModuleStatus(ltr11Slot, false);
+        appendInfo(QString("LTR11: ошибка приёма данных: %1").arg(error), true);
+        setModuleStatus(ltr11_slot, false);
     } else {
-        appendInfo(QString("Принято слов: %1").arg(data.size()));
+        appendInfo(QString("LTR11: принято слов: %1").arg(data.size()));
         TLTR11* hmodule = m_ltr11->handle();
 
-        QVector<double> voltages(data.size()); // выходные напряжения
+        QVector<double> voltages(data.size());
         int data_size = data.size();
 
         if (data.isEmpty()) {
-            appendInfo("НЕТ ДАННЫХ ДЛЯ ОБРАБОТКИ", true);
+            appendInfo("LTR11: нет данных для обработки", true);
         } else {
             INT proc_result = LTR11_ProcessData(
                 hmodule,
@@ -295,46 +195,226 @@ void MainWindow::init_ltr()
                 );
 
             if (proc_result != LTR_OK) {
-                appendInfo(QString("Ошибка обработки данных: %1").arg(proc_result), true);
+                appendInfo(QString("LTR11: ошибка обработки данных: %1").arg(proc_result), true);
             } else {
-                appendInfo(QString("Обработано данных: %1 значений").arg(data_size));
-
-                // Вывод первых значений (до 20)
-                QString volt_vals;
-                int channels = sizeof(chTbl) / sizeof(chTbl[0]);
-                for (int i = 0; i < qMin(20, data_size); ++i) {
-                    volt_vals += QString::number(voltages[i], 'f', 6) + " В  ";
-                    if (channels > 1 && (i + 1) % channels == 0) volt_vals += "\n";
-                }
-                appendInfo("Первые напряжения (В):");
-                appendInfo(volt_vals);
-
-                // статистика
-                double min_v = *std::min_element(voltages.begin(), voltages.begin() + data_size);
-                double max_v = *std::max_element(voltages.begin(), voltages.begin() + data_size);
-                double sum_v = std::accumulate(voltages.begin(), voltages.begin() + data_size, 0.0);
-                double avg_v = sum_v / data_size;
-
-                appendInfo(QString("Статистика: min=%1 В, max=%2 В, avg=%3 В, размах=%4 В")
-                               .arg(QString::number(min_v, 'f', 6))
-                               .arg(QString::number(max_v, 'f', 6))
-                               .arg(QString::number(avg_v, 'f', 6))
-                               .arg(QString::number(max_v - min_v, 'f', 6)));
-
-                // Информационное сообщение в лог (вместо QMessageBox)
-                appendInfo(QString("Получено %1 слов. Переведено %2 значений.")
-                               .arg(data.size()).arg(data_size));
+                appendInfo(QString("LTR11: обработано данных: %1 значений").arg(data_size));
             }
         }
     }
 
-    // Завершаем сбор и закрываем соединения
     if (m_ltr11) {
         m_ltr11->stop();
         m_ltr11->close();
         appendInfo("LTR11: сбор остановлен, модуль закрыт.");
     }
     m_ltr11.reset();
+}
+
+void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
+{
+    m_ltr114 = std::make_unique<LTR114>();
+    appendInfo(QString("Открываем LTR114 в слоте %1...").arg(ltr114_slot));
+
+    if (!m_ltr114->open(crate_sn, ltr114_slot)) {
+        appendInfo(QString("Не удалось открыть LTR114 в слоте %1").arg(ltr114_slot), true);
+        m_ltr114.reset();
+        setModuleStatus(ltr114_slot, false);
+        return;
+    }
+
+    appendInfo("LTR114 успешно открыт.");
+    setModuleStatus(ltr114_slot, true);
+
+    if (!m_ltr114->get_config()) {
+        appendInfo("Не удалось получить конфигурацию LTR114", true);
+        return;
+    }
+
+    appendInfo(QString("LTR114: %1  SN: %2").arg(m_ltr114->module_name(), m_ltr114->module_serial()));
+
+    const int requested_ltr114_channel = 301;
+    int ltr114_phy_channel = requested_ltr114_channel;
+    if ((ltr114_phy_channel < 0) || (ltr114_phy_channel > 15)) {
+        appendInfo(QString("LTR114: канал %1 вне диапазона [0..15], используем канал 0").arg(requested_ltr114_channel), true);
+        ltr114_phy_channel = 0;
+    }
+
+    TLTR114_LCHANNEL lch_tbl[1];
+    lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, ltr114_phy_channel, LTR114_URANGE_04);
+
+    m_ltr114->set_freq_divider(4);
+    m_ltr114->set_logical_channels(1, lch_tbl);
+    m_ltr114->set_sync_mode(LTR114_SYNCMODE_INTERNAL);
+    m_ltr114->set_interval(0);
+
+    if (!m_ltr114->apply_config()) {
+        appendInfo("Не удалось применить настройки АЦП LTR114", true);
+        return;
+    }
+
+    if (LTR114_Calibrate(m_ltr114->handle()) != LTR_OK) {
+        appendInfo("LTR114: ошибка начальной автокалибровки", true);
+        return;
+    }
+    appendInfo("LTR114: начальная автокалибровка выполнена.");
+
+    if (!m_ltr114->start()) {
+        appendInfo("LTR114: не удалось запустить сбор данных", true);
+        return;
+    }
+    appendInfo("LTR114: сбор данных запущен.");
+
+    int error = 0;
+    QVector<DWORD> data = m_ltr114->receive_data(3000, &error);
+    if (error != 0) {
+        appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
+        setModuleStatus(ltr114_slot, false);
+    } else if (data.isEmpty()) {
+        appendInfo("LTR114: не приняты данные", true);
+    } else {
+        appendInfo(QString("LTR114: принято слов: %1").arg(data.size()));
+
+        TLTR114* hmodule = m_ltr114->handle();
+        QVector<double> proc_data(data.size());
+        QVector<double> therm_data(data.size());
+        INT proc_size = data.size();
+        INT therm_count = 0;
+
+        INT proc_result = LTR114_ProcessDataTherm(
+            hmodule,
+            data.data(),
+            proc_data.data(),
+            therm_data.data(),
+            &proc_size,
+            &therm_count,
+            LTR114_CORRECTION_MODE_INIT,
+            LTR114_PROCF_VALUE
+            );
+
+        if (proc_result != LTR_OK) {
+            appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
+        } else {
+            appendInfo(QString("LTR114: обработано %1 значений АЦП").arg(proc_size));
+            appendInfo(QString("LTR114: получено %1 значений термопары").arg(therm_count));
+
+            if (therm_count > 0) {
+                QString therm_values;
+                int show_count = qMin(therm_count, 20);
+                for (int i = 0; i < show_count; ++i) {
+                    therm_values += QString("%1 В").arg(QString::number(therm_data[i], 'f', 6));
+                    if (i + 1 < show_count)
+                        therm_values += ", ";
+                }
+
+                appendInfo("LTR114: первые значения термопары (напряжение):");
+                appendInfo(therm_values);
+
+                double min_v = *std::min_element(therm_data.begin(), therm_data.begin() + therm_count);
+                double max_v = *std::max_element(therm_data.begin(), therm_data.begin() + therm_count);
+                double sum_v = std::accumulate(therm_data.begin(), therm_data.begin() + therm_count, 0.0);
+                double avg_v = sum_v / therm_count;
+
+                appendInfo(QString("LTR114 термопара: min=%1 В, max=%2 В, avg=%3 В, размах=%4 В")
+                               .arg(QString::number(min_v, 'f', 6))
+                               .arg(QString::number(max_v, 'f', 6))
+                               .arg(QString::number(avg_v, 'f', 6))
+                               .arg(QString::number(max_v - min_v, 'f', 6)));
+            }
+        }
+    }
+
+    if (m_ltr114) {
+        m_ltr114->stop();
+        m_ltr114->close();
+        appendInfo("LTR114: сбор остановлен, модуль закрыт.");
+    }
+    m_ltr114.reset();
+}
+
+void MainWindow::init_ltr()
+{
+    appendInfo("Начало поиска крейтов...");
+
+    auto crates = Crate::enumerate_crates();
+    if (crates.isEmpty()) {
+        appendInfo("Нет подключенных крейтов", true);
+        return;
+    }
+
+    appendInfo(QString("Найдено %1 крейт(ов):").arg(crates.size()));
+    for (const auto& s : crates) appendInfo(QString("  %1").arg(s));
+
+    QString crate_sn = crates.first();
+    appendInfo(QString("Открываем крейт SN: %1").arg(crate_sn));
+
+    m_crate = std::make_unique<Crate>(crate_sn);
+    if (!m_crate->is_open()) {
+        appendInfo("Не удалось открыть крейт", true);
+        m_crate.reset();
+        return;
+    }
+    appendInfo("Крейт успешно открыт.");
+
+    auto modules = m_crate->get_modules();
+    if (modules.isEmpty()) {
+        appendInfo("В крейте нет модулей", true);
+        return;
+    }
+
+    WORD slot_count = m_crate->get_slot_count();
+    appendInfo(QString("Вместимость крейта: %1 слотов").arg(slot_count));
+
+    for (int s = 1; s <= slot_count; ++s) {
+        QWidget* w = createModuleItemWidget(s, "EMPTY", false);
+        QListWidgetItem* it = new QListWidgetItem(modulesList);
+        it->setSizeHint(w->sizeHint());
+        modulesList->addItem(it);
+        modulesList->setItemWidget(it, w);
+        moduleWidgets.insert(s, w);
+    }
+
+    appendInfo("Список модулей в крейте:");
+    for (const auto& mod : modules) {
+        int slot = mod.first;
+        WORD mid = mod.second;
+        QString name = module_name(mid);
+        appendInfo(QString("  слот %1: %2").arg(slot).arg(name));
+
+        QWidget* w = moduleWidgets.value(slot, nullptr);
+        if (w) {
+            QWidget* new_w = createModuleItemWidget(slot, name, true);
+            QListWidgetItem* item = modulesList->item(slot - 1);
+            if (item) {
+                modulesList->setItemWidget(item, new_w);
+                moduleWidgets[slot] = new_w;
+            }
+        }
+    }
+
+    int ltr11_slot = -1;
+    int ltr114_slot = -1;
+
+    for (const auto& mod : modules) {
+        if (mod.second == LTR_MID_LTR11 && ltr11_slot == -1)
+            ltr11_slot = mod.first;
+        if (mod.second == LTR_MID_LTR114 && ltr114_slot == -1)
+            ltr114_slot = mod.first;
+    }
+
+    if (ltr11_slot != -1) {
+        appendInfo(QString("Модуль LTR11 найден в слоте %1").arg(ltr11_slot));
+        run_ltr11_module(crate_sn, ltr11_slot);
+    } else {
+        appendInfo("Модуль LTR11 не найден", true);
+    }
+
+    if (ltr114_slot != -1) {
+        appendInfo(QString("Модуль LTR114 найден в слоте %1").arg(ltr114_slot));
+        run_ltr114_module(crate_sn, ltr114_slot);
+    } else {
+        appendInfo("Модуль LTR114 не найден", true);
+    }
+
     m_crate.reset();
     appendInfo("Соединения с крейтом закрыты. Работа завершена.");
 }
