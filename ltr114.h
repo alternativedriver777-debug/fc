@@ -19,7 +19,7 @@ public:
     QVector<DWORD> receive_data(DWORD timeout, int* error_code = nullptr) override;
 
     void set_freq_divider(DWORD freq_divider);
-    void set_logical_channels(int channel_count, const DWORD* channel_table);
+    void set_logical_channels(int channel_count, const TLTR114_LCHANNEL* channel_table);
     void set_sync_mode(DWORD sync_mode);
     void set_interval(DWORD interval);
 

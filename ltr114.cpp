@@ -104,7 +104,7 @@ void LTR114::set_freq_divider(DWORD freq_divider)
     m_handle.FreqDivider = freq_divider;
 }
 
-void LTR114::set_logical_channels(int channel_count, const DWORD* channel_table)
+void LTR114::set_logical_channels(int channel_count, const TLTR114_LCHANNEL* channel_table)
 {
     if (channel_count < 0)
         channel_count = 0;

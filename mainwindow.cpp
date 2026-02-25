@@ -232,8 +232,15 @@ void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 
     appendInfo(QString("LTR114: %1  SN: %2").arg(m_ltr114->module_name(), m_ltr114->module_serial()));
 
-    DWORD lch_tbl[1];
-    lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, 0, LTR114_URANGE_04);
+    const int requested_ltr114_channel = 301;
+    int ltr114_phy_channel = requested_ltr114_channel;
+    if ((ltr114_phy_channel < 0) || (ltr114_phy_channel > 15)) {
+        appendInfo(QString("LTR114: канал %1 вне диапазона [0..15], используем канал 0").arg(requested_ltr114_channel), true);
+        ltr114_phy_channel = 0;
+    }
+
+    TLTR114_LCHANNEL lch_tbl[1];
+    lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, ltr114_phy_channel, LTR114_URANGE_04);
 
     m_ltr114->set_freq_divider(4);
     m_ltr114->set_logical_channels(1, lch_tbl);
