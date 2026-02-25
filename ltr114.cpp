@@ -109,8 +109,8 @@ void LTR114::set_logical_channels(int channel_count, const TLTR114_LCHANNEL* cha
     if (channel_count < 0)
         channel_count = 0;
 
-    if (channel_count > LTR114_CHANNEL_CNT_MAX)
-        channel_count = LTR114_CHANNEL_CNT_MAX;
+//     if (channel_count > LTR114_CHANNEL_CNT_MAX)
+//         channel_count = LTR114_CHANNEL_CNT_MAX;
 
     m_handle.LChQnt = channel_count;
 
