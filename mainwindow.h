@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QPair>
 #include <QPointF>
+#include <QElapsedTimer>
 
 #include <QMainWindow>
 #include <QString>
@@ -76,7 +77,9 @@ private:
     QString m_crateSerial;
     int m_ltr114Slot;
     bool m_captureRunning;
+    bool m_simulationMode;
     quint64 m_tickCounter;
+    QElapsedTimer m_simulationTime;
     QVector<QPointF> m_plotPoints;
     QVector<QPair<quint64, double>> m_allSamples;
 
