@@ -7,7 +7,16 @@
 #include <QDateTime>
 #include <QFrame>
 #include <QDebug>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QFile>
+#include <QTextStream>
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
 #include <numeric>
+#include <algorithm>
 
 #include "ltr11.h"
 #include "ltr114.h"
@@ -41,17 +50,33 @@ QString MainWindow::module_name(WORD mid)
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , startButton(nullptr)
+    , stopButton(nullptr)
+    , freqDividerSpin(nullptr)
+    , plotEverySpin(nullptr)
+    , chunkSizeSpin(nullptr)
+    , chartView(nullptr)
+    , chart(nullptr)
+    , lineSeries(nullptr)
+    , axisX(nullptr)
+    , axisY(nullptr)
+    , m_ltr114Slot(-1)
+    , m_captureRunning(false)
+    , m_tickCounter(0)
 {
     ui->setupUi(this);
 
     init_ui_replace();
+    setup_plot();
     appendInfo("Приложение запущено.");
 
+    connect(&acquisitionTimer, &QTimer::timeout, this, &MainWindow::poll_ltr114_data);
     init_ltr();
 }
 
 MainWindow::~MainWindow()
 {
+    close_ltr114_capture();
     delete ui;
 }
 
@@ -69,6 +94,37 @@ void MainWindow::init_ui_replace()
     modulesList->setSelectionMode(QAbstractItemView::NoSelection);
     modulesList->setFocusPolicy(Qt::NoFocus);
 
+    QWidget* rightPanel = new QWidget(this);
+    QVBoxLayout* rightLay = new QVBoxLayout(rightPanel);
+
+    QHBoxLayout* controlLay = new QHBoxLayout;
+    freqDividerSpin = new QSpinBox(this);
+    freqDividerSpin->setRange(2, 8000);
+    freqDividerSpin->setValue(4);
+    freqDividerSpin->setPrefix("FreqDivider: ");
+
+    plotEverySpin = new QSpinBox(this);
+    plotEverySpin->setRange(1, 10000);
+    plotEverySpin->setValue(50);
+    plotEverySpin->setPrefix("График каждый N тик: ");
+
+    chunkSizeSpin = new QSpinBox(this);
+    chunkSizeSpin->setRange(16, 20000);
+    chunkSizeSpin->setValue(3000);
+    chunkSizeSpin->setPrefix("Chunk слов: ");
+
+    startButton = new QPushButton("Старт", this);
+    stopButton = new QPushButton("Остановить", this);
+    stopButton->setEnabled(false);
+
+    controlLay->addWidget(freqDividerSpin);
+    controlLay->addWidget(plotEverySpin);
+    controlLay->addWidget(chunkSizeSpin);
+    controlLay->addWidget(startButton);
+    controlLay->addWidget(stopButton);
+
+    rightLay->addLayout(controlLay);
+
     infoText = new QTextEdit(this);
     infoText->setReadOnly(true);
     infoText->setAcceptRichText(false);
@@ -77,10 +133,49 @@ void MainWindow::init_ui_replace()
     f.setStyleHint(QFont::Monospace);
     infoText->setFont(f);
 
+    rightLay->addWidget(infoText, 1);
+
     main_lay->addWidget(modulesList, 0);
-    main_lay->addWidget(infoText, 1);
+    main_lay->addWidget(rightPanel, 1);
+
+    connect(startButton, &QPushButton::clicked, this, &MainWindow::on_start_capture_clicked);
+    connect(stopButton, &QPushButton::clicked, this, &MainWindow::on_stop_capture_clicked);
 
     appendInfo("Информационный виджет создан.");
+}
+
+void MainWindow::setup_plot()
+{
+    lineSeries = new QLineSeries(this);
+
+    chart = new QChart();
+    chart->addSeries(lineSeries);
+    chart->legend()->hide();
+    chart->setTitle("LTR114: Тики / Напряжение");
+
+    axisX = new QValueAxis();
+    axisX->setTitleText("Тики");
+    axisX->setLabelFormat("%i");
+    axisX->setRange(0, 100);
+
+    axisY = new QValueAxis();
+    axisY->setTitleText("Напряжение, В");
+    axisY->setLabelFormat("%.6f");
+    axisY->setRange(-0.1, 0.1);
+
+    chart->addAxis(axisX, Qt::AlignBottom);
+    chart->addAxis(axisY, Qt::AlignLeft);
+    lineSeries->attachAxis(axisX);
+    lineSeries->attachAxis(axisY);
+
+    chartView = new QChartView(chart, this);
+    chartView->setMinimumHeight(280);
+    chartView->setRenderHint(QPainter::Antialiasing);
+
+    auto* rightLay = qobject_cast<QVBoxLayout*>(qobject_cast<QWidget*>(infoText->parentWidget())->layout());
+    if (rightLay) {
+        rightLay->insertWidget(1, chartView, 2);
+    }
 }
 
 void MainWindow::appendInfo(const QString &msg, bool isError)
@@ -134,201 +229,216 @@ void MainWindow::setModuleStatus(int slot, bool ok)
 
 void MainWindow::run_ltr11_module(const QString& crate_sn, int ltr11_slot)
 {
-    m_ltr11 = std::make_unique<LTR11>();
-    appendInfo(QString("Открываем LTR11 в слоте %1...").arg(ltr11_slot));
-    if (!m_ltr11->open(crate_sn, ltr11_slot)) {
-        appendInfo(QString("Не удалось открыть LTR11 в слоте %1").arg(ltr11_slot), true);
-        m_ltr11.reset();
-        setModuleStatus(ltr11_slot, false);
-        return;
-    }
-
-    appendInfo("LTR11 успешно открыт.");
-    setModuleStatus(ltr11_slot, true);
-
-    if (!m_ltr11->get_config()) {
-        appendInfo("Не удалось получить конфигурацию LTR11", true);
-        return;
-    }
-    appendInfo(QString("LTR11: %1  SN: %2").arg(m_ltr11->module_name(), m_ltr11->module_serial()));
-
-    m_ltr11->set_start_mode(LTR11_STARTADCMODE_INT);
-    m_ltr11->set_input_mode(LTR11_INPMODE_INT);
-    BYTE ch_tbl[] = { static_cast<BYTE>((0 << 6) | (0 << 4) | (0 << 0)) };
-    m_ltr11->set_logical_channels(1, ch_tbl);
-    m_ltr11->set_ADC_rate(1, 149);
-
-    if (!m_ltr11->apply_config()) {
-        appendInfo("Не удалось применить настройки АЦП LTR11", true);
-        return;
-    }
-    appendInfo(QString("LTR11: параметры АЦП установлены, частота канала: %1 кГц").arg(m_ltr11->channel_rate()));
-
-    if (!m_ltr11->start()) {
-        appendInfo("LTR11: не удалось запустить сбор данных", true);
-        return;
-    }
-    appendInfo("LTR11: сбор данных запущен.");
-
-    int error = 0;
-    QVector<DWORD> data = m_ltr11->receive_data(3000, &error);
-    if (error != 0) {
-        appendInfo(QString("LTR11: ошибка приёма данных: %1").arg(error), true);
-        setModuleStatus(ltr11_slot, false);
-    } else {
-        appendInfo(QString("LTR11: принято слов: %1").arg(data.size()));
-        TLTR11* hmodule = m_ltr11->handle();
-
-        QVector<double> voltages(data.size());
-        int data_size = data.size();
-
-        if (data.isEmpty()) {
-            appendInfo("LTR11: нет данных для обработки", true);
-        } else {
-            INT proc_result = LTR11_ProcessData(
-                hmodule,
-                data.data(),
-                voltages.data(),
-                &data_size,
-                TRUE,
-                TRUE
-                );
-
-            if (proc_result != LTR_OK) {
-                appendInfo(QString("LTR11: ошибка обработки данных: %1").arg(proc_result), true);
-            } else {
-                appendInfo(QString("LTR11: обработано данных: %1 значений").arg(data_size));
-            }
-        }
-    }
-
-    if (m_ltr11) {
-        m_ltr11->stop();
-        m_ltr11->close();
-        appendInfo("LTR11: сбор остановлен, модуль закрыт.");
-    }
-    m_ltr11.reset();
+    Q_UNUSED(crate_sn)
+    Q_UNUSED(ltr11_slot)
 }
 
 void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 {
-    m_ltr114 = std::make_unique<LTR114>();
-    appendInfo(QString("Открываем LTR114 в слоте %1...").arg(ltr114_slot));
+    m_crateSerial = crate_sn;
+    m_ltr114Slot = ltr114_slot;
+    appendInfo(QString("LTR114 найден в слоте %1. Готов к непрерывному сбору.").arg(ltr114_slot));
+}
 
-    if (!m_ltr114->open(crate_sn, ltr114_slot)) {
-        appendInfo(QString("Не удалось открыть LTR114 в слоте %1").arg(ltr114_slot), true);
-        m_ltr114.reset();
-        setModuleStatus(ltr114_slot, false);
-        return;
+bool MainWindow::open_ltr114_for_capture()
+{
+    if (m_crateSerial.isEmpty() || m_ltr114Slot < 0) {
+        appendInfo("Не найден LTR114: невозможно запустить сбор.", true);
+        return false;
     }
 
-    appendInfo("LTR114 успешно открыт.");
-    setModuleStatus(ltr114_slot, true);
+    m_ltr114 = std::make_unique<LTR114>();
+
+    if (!m_ltr114->open(m_crateSerial, m_ltr114Slot)) {
+        appendInfo("Не удалось открыть LTR114 для сбора.", true);
+        m_ltr114.reset();
+        setModuleStatus(m_ltr114Slot, false);
+        return false;
+    }
 
     if (!m_ltr114->get_config()) {
-        appendInfo("Не удалось получить конфигурацию LTR114", true);
-        return;
-    }
-
-    appendInfo(QString("LTR114: %1  SN: %2").arg(m_ltr114->module_name(), m_ltr114->module_serial()));
-
-    const int requested_ltr114_channel = 301;
-    int ltr114_phy_channel = requested_ltr114_channel;
-    if ((ltr114_phy_channel < 0) || (ltr114_phy_channel > 15)) {
-        appendInfo(QString("LTR114: канал %1 вне диапазона [0..15], используем канал 0").arg(requested_ltr114_channel), true);
-        ltr114_phy_channel = 0;
+        appendInfo("Не удалось получить конфигурацию LTR114.", true);
+        m_ltr114.reset();
+        return false;
     }
 
     TLTR114_LCHANNEL lch_tbl[1];
-    lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, ltr114_phy_channel, LTR114_URANGE_04);
+    lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, 0, LTR114_URANGE_04);
 
-    m_ltr114->set_freq_divider(4);
+    const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
+    m_ltr114->set_freq_divider(divider);
     m_ltr114->set_logical_channels(1, lch_tbl);
     m_ltr114->set_sync_mode(LTR114_SYNCMODE_INTERNAL);
     m_ltr114->set_interval(0);
 
     if (!m_ltr114->apply_config()) {
-        appendInfo("Не удалось применить настройки АЦП LTR114", true);
-        return;
+        appendInfo("Не удалось применить настройки АЦП LTR114.", true);
+        m_ltr114.reset();
+        return false;
     }
 
     if (LTR114_Calibrate(m_ltr114->handle()) != LTR_OK) {
-        appendInfo("LTR114: ошибка начальной автокалибровки", true);
-        return;
+        appendInfo("LTR114: ошибка автокалибровки.", true);
+        m_ltr114.reset();
+        return false;
     }
-    appendInfo("LTR114: начальная автокалибровка выполнена.");
 
     if (!m_ltr114->start()) {
-        appendInfo("LTR114: не удалось запустить сбор данных", true);
-        return;
+        appendInfo("LTR114: не удалось запустить сбор данных.", true);
+        m_ltr114.reset();
+        return false;
     }
-    appendInfo("LTR114: сбор данных запущен.");
+
+    double sampleRateHz = static_cast<double>(LTR114_FREQ(m_ltr114->handle())) * 1000.0;
+    appendInfo(QString("Сбор запущен. FreqDivider=%1, частота дискретизации=%2 Гц")
+                   .arg(divider)
+                   .arg(QString::number(sampleRateHz, 'f', 2)));
+    setModuleStatus(m_ltr114Slot, true);
+    return true;
+}
+
+void MainWindow::close_ltr114_capture()
+{
+    if (!m_ltr114)
+        return;
+
+    m_ltr114->stop();
+    m_ltr114->close();
+    m_ltr114.reset();
+}
+
+void MainWindow::refresh_plot()
+{
+    lineSeries->replace(m_plotPoints);
+
+    if (!m_plotPoints.isEmpty()) {
+        const qreal minX = m_plotPoints.first().x();
+        const qreal maxX = m_plotPoints.last().x();
+        axisX->setRange(minX, qMax(minX + 10.0, maxX));
+
+        qreal maxAbsV = 0.001;
+        for (const QPointF& p : m_plotPoints)
+            maxAbsV = qMax(maxAbsV, std::abs(p.y()));
+
+        const qreal margin = maxAbsV * 0.1;
+        axisY->setRange(-(maxAbsV + margin), maxAbsV + margin);
+    }
+}
+
+bool MainWindow::save_capture_to_file(const QString& file_path)
+{
+    QFile file(file_path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        appendInfo(QString("Не удалось открыть файл %1 для записи").arg(file_path), true);
+        return false;
+    }
+
+    QTextStream out(&file);
+    for (const auto& sample : m_allSamples) {
+        out << sample.first << ";" << QString::number(sample.second, 'f', 9) << "\n";
+    }
+
+    file.close();
+    appendInfo(QString("Файл сохранён: %1 (%2 строк)").arg(file_path).arg(m_allSamples.size()));
+    return true;
+}
+
+void MainWindow::on_start_capture_clicked()
+{
+    if (m_captureRunning)
+        return;
+
+    m_allSamples.clear();
+    m_plotPoints.clear();
+    m_tickCounter = 0;
+    refresh_plot();
+
+    if (!open_ltr114_for_capture())
+        return;
+
+    m_captureRunning = true;
+    startButton->setEnabled(false);
+    stopButton->setEnabled(true);
+    freqDividerSpin->setEnabled(false);
+
+    acquisitionTimer.start(30);
+}
+
+void MainWindow::on_stop_capture_clicked()
+{
+    if (!m_captureRunning)
+        return;
+
+    acquisitionTimer.stop();
+    m_captureRunning = false;
+
+    close_ltr114_capture();
+
+    const QString fileName = QString("ltr114_capture_%1.txt")
+                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    save_capture_to_file(fileName);
+
+    startButton->setEnabled(true);
+    stopButton->setEnabled(false);
+    freqDividerSpin->setEnabled(true);
+
+    appendInfo("Сбор остановлен пользователем.");
+}
+
+void MainWindow::poll_ltr114_data()
+{
+    if (!m_captureRunning || !m_ltr114)
+        return;
 
     int error = 0;
-    QVector<DWORD> data = m_ltr114->receive_data(3000, &error);
+    QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
+
     if (error != 0) {
         appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
-        setModuleStatus(ltr114_slot, false);
-    } else if (data.isEmpty()) {
-        appendInfo("LTR114: не приняты данные", true);
-    } else {
-        appendInfo(QString("LTR114: принято слов: %1").arg(data.size()));
+        on_stop_capture_clicked();
+        return;
+    }
 
-        TLTR114* hmodule = m_ltr114->handle();
-        QVector<double> proc_data(data.size());
-        QVector<double> therm_data(data.size());
-        INT proc_size = data.size();
-        INT therm_count = 0;
+    if (data.isEmpty())
+        return;
 
-        INT proc_result = LTR114_ProcessDataTherm(
-            hmodule,
-            data.data(),
-            proc_data.data(),
-            therm_data.data(),
-            &proc_size,
-            &therm_count,
-            LTR114_CORRECTION_MODE_INIT,
-            LTR114_PROCF_VALUE
-            );
+    QVector<double> proc_data(data.size());
+    QVector<double> therm_data(data.size());
+    INT proc_size = data.size();
+    INT therm_count = 0;
 
-        if (proc_result != LTR_OK) {
-            appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
-        } else {
-            appendInfo(QString("LTR114: обработано %1 значений АЦП").arg(proc_size));
-            appendInfo(QString("LTR114: получено %1 значений термопары").arg(therm_count));
+    INT proc_result = LTR114_ProcessDataTherm(
+        m_ltr114->handle(),
+        data.data(),
+        proc_data.data(),
+        therm_data.data(),
+        &proc_size,
+        &therm_count,
+        LTR114_CORRECTION_MODE_INIT,
+        LTR114_PROCF_VALUE);
 
-            if (therm_count > 0) {
-                QString therm_values;
-                int show_count = qMin(therm_count, 20);
-                for (int i = 0; i < show_count; ++i) {
-                    therm_values += QString("%1 В").arg(QString::number(therm_data[i], 'f', 6));
-                    if (i + 1 < show_count)
-                        therm_values += ", ";
-                }
+    if (proc_result != LTR_OK) {
+        appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
+        return;
+    }
 
-                appendInfo("LTR114: первые значения термопары (напряжение):");
-                appendInfo(therm_values);
+    const int everyN = qMax(1, plotEverySpin->value());
+    for (int i = 0; i < therm_count; ++i) {
+        const double voltage = therm_data[i];
+        ++m_tickCounter;
+        m_allSamples.append(qMakePair(m_tickCounter, voltage));
 
-                double min_v = *std::min_element(therm_data.begin(), therm_data.begin() + therm_count);
-                double max_v = *std::max_element(therm_data.begin(), therm_data.begin() + therm_count);
-                double sum_v = std::accumulate(therm_data.begin(), therm_data.begin() + therm_count, 0.0);
-                double avg_v = sum_v / therm_count;
-
-                appendInfo(QString("LTR114 термопара: min=%1 В, max=%2 В, avg=%3 В, размах=%4 В")
-                               .arg(QString::number(min_v, 'f', 6))
-                               .arg(QString::number(max_v, 'f', 6))
-                               .arg(QString::number(avg_v, 'f', 6))
-                               .arg(QString::number(max_v - min_v, 'f', 6)));
-            }
+        if ((m_tickCounter % static_cast<quint64>(everyN)) == 0) {
+            m_plotPoints.append(QPointF(static_cast<qreal>(m_tickCounter), voltage));
         }
     }
 
-    if (m_ltr114) {
-        m_ltr114->stop();
-        m_ltr114->close();
-        appendInfo("LTR114: сбор остановлен, модуль закрыт.");
+    const int maxPlotPoints = 5000;
+    if (m_plotPoints.size() > maxPlotPoints) {
+        m_plotPoints.remove(0, m_plotPoints.size() - maxPlotPoints);
     }
-    m_ltr114.reset();
+
+    refresh_plot();
 }
 
 void MainWindow::init_ltr()
@@ -391,21 +501,10 @@ void MainWindow::init_ltr()
         }
     }
 
-    int ltr11_slot = -1;
     int ltr114_slot = -1;
-
     for (const auto& mod : modules) {
-        if (mod.second == LTR_MID_LTR11 && ltr11_slot == -1)
-            ltr11_slot = mod.first;
         if (mod.second == LTR_MID_LTR114 && ltr114_slot == -1)
             ltr114_slot = mod.first;
-    }
-
-    if (ltr11_slot != -1) {
-        appendInfo(QString("Модуль LTR11 найден в слоте %1").arg(ltr11_slot));
-        run_ltr11_module(crate_sn, ltr11_slot);
-    } else {
-        appendInfo("Модуль LTR11 не найден", true);
     }
 
     if (ltr114_slot != -1) {
@@ -413,8 +512,9 @@ void MainWindow::init_ltr()
         run_ltr114_module(crate_sn, ltr114_slot);
     } else {
         appendInfo("Модуль LTR114 не найден", true);
+        startButton->setEnabled(false);
     }
 
     m_crate.reset();
-    appendInfo("Соединения с крейтом закрыты. Работа завершена.");
+    appendInfo("Поиск модулей завершён. Соединение с крейтом закрыто до старта.");
 }
