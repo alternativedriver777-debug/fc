@@ -26,6 +26,7 @@ class LTR11;
 class LTR114;
 class QPushButton;
 class QSpinBox;
+class QCheckBox;
 
 QT_BEGIN_NAMESPACE
 class QValueAxis;
@@ -63,9 +64,10 @@ private:
     QTextEdit* infoText;
     QPushButton* startButton;
     QPushButton* stopButton;
-    QSpinBox* freqDividerSpin;
+    QSpinBox* sampleRateSpin;
     QSpinBox* plotEverySpin;
     QSpinBox* chunkSizeSpin;
+    QCheckBox* saveToFileCheck;
     QChartView* chartView;
     QChart* chart;
     QLineSeries* lineSeries;
