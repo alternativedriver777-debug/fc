@@ -3,6 +3,10 @@
 
 #include <QListWidget>
 #include <QTextEdit>
+#include <QTimer>
+#include <QVector>
+#include <QPair>
+#include <QPointF>
 
 #include <QMainWindow>
 #include <QString>
@@ -11,7 +15,6 @@
 #include "LTR/ltr11api.h"
 #include "LTR/ltr114api.h"
 #include "crate.h"
-#include <QMainWindow>
 #include <memory>
 
 QT_BEGIN_NAMESPACE
@@ -21,6 +24,15 @@ QT_END_NAMESPACE
 class Crate;
 class LTR11;
 class LTR114;
+class QPushButton;
+class QSpinBox;
+
+QT_BEGIN_NAMESPACE
+class QValueAxis;
+class QLineSeries;
+class QChart;
+class QChartView;
+QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
 {
@@ -33,6 +45,11 @@ public:
 private:
     void init_ltr();
     static QString module_name(WORD mid);
+    void setup_plot();
+    bool open_ltr114_for_capture();
+    void close_ltr114_capture();
+    void refresh_plot();
+    bool save_capture_to_file(const QString& file_path);
 
     const int CONNECTION_TIMEOUT_MS = 10000;
     const int POLL_INTERVAL_MS = 200;
@@ -44,6 +61,24 @@ private:
 
     QListWidget* modulesList;
     QTextEdit* infoText;
+    QPushButton* startButton;
+    QPushButton* stopButton;
+    QSpinBox* freqDividerSpin;
+    QSpinBox* plotEverySpin;
+    QSpinBox* chunkSizeSpin;
+    QChartView* chartView;
+    QChart* chart;
+    QLineSeries* lineSeries;
+    QValueAxis* axisX;
+    QValueAxis* axisY;
+    QTimer acquisitionTimer;
+
+    QString m_crateSerial;
+    int m_ltr114Slot;
+    bool m_captureRunning;
+    quint64 m_tickCounter;
+    QVector<QPointF> m_plotPoints;
+    QVector<QPair<quint64, double>> m_allSamples;
 
     // map slot -> widget (for quick status updates)
     QMap<int, QWidget*> moduleWidgets;
@@ -59,6 +94,11 @@ private:
     void setModuleStatus(int slot, bool ok);
     void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
     void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
+
+private slots:
+    void on_start_capture_clicked();
+    void on_stop_capture_clicked();
+    void poll_ltr114_data();
 };
 
 #endif // MAINWINDOW_H
