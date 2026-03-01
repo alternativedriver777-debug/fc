@@ -80,6 +80,8 @@ private:
     bool m_simulationMode;
     quint64 m_tickCounter;
     QElapsedTimer m_simulationTime;
+    qint64 m_lastSimulationElapsedMs;
+    double m_simulatedSampleAccumulator;
     QVector<QPointF> m_plotPoints;
     QVector<QPair<quint64, double>> m_allSamples;
 

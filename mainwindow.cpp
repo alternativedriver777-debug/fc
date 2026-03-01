@@ -22,6 +22,14 @@
 #include "ltr11.h"
 #include "ltr114.h"
 
+static double simulation_sample_rate_hz(DWORD divider)
+{
+    // Сохраняем прежнюю точку: divider=4 -> 5000 Гц.
+    const double baseRateHz = 20000.0;
+    const DWORD safeDivider = qMax<DWORD>(2, divider);
+    return baseRateHz / static_cast<double>(safeDivider);
+}
+
 QString MainWindow::module_name(WORD mid)
 {
     switch (mid)
@@ -65,6 +73,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_captureRunning(false)
     , m_simulationMode(false)
     , m_tickCounter(0)
+    , m_lastSimulationElapsedMs(0)
+    , m_simulatedSampleAccumulator(0.0)
 {
     ui->setupUi(this);
 
@@ -248,8 +258,13 @@ bool MainWindow::open_ltr114_for_capture()
 
     if (m_simulationMode) {
         m_simulationTime.start();
-        appendInfo(QString("[SIMULATION] Сбор запущен. FreqDivider=%1, частота дискретизации=5000.00 Гц")
-                       .arg(divider));
+        m_lastSimulationElapsedMs = 0;
+        m_simulatedSampleAccumulator = 0.0;
+
+        const double sampleRateHz = simulation_sample_rate_hz(divider);
+        appendInfo(QString("[SIMULATION] Сбор запущен. FreqDivider=%1, частота дискретизации=%2 Гц")
+                       .arg(divider)
+                       .arg(QString::number(sampleRateHz, 'f', 3)));
         setModuleStatus(m_ltr114Slot, true);
         return true;
     }
@@ -405,14 +420,27 @@ void MainWindow::poll_ltr114_data()
     QVector<double> voltages;
 
     if (m_simulationMode) {
-        const int chunkSize = qMax(16, chunkSizeSpin->value());
-        voltages.reserve(chunkSize);
+        const int chunkLimit = qMax(16, chunkSizeSpin->value());
+        const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
+        const double sampleRateHz = simulation_sample_rate_hz(divider);
 
-        const double elapsedSec = m_simulationTime.isValid() ? m_simulationTime.elapsed() / 1000.0 : 0.0;
+        const qint64 elapsedMs = m_simulationTime.isValid() ? m_simulationTime.elapsed() : 0;
+        const qint64 deltaMs = qMax<qint64>(0, elapsedMs - m_lastSimulationElapsedMs);
+        m_lastSimulationElapsedMs = elapsedMs;
+
+        m_simulatedSampleAccumulator += sampleRateHz * (static_cast<double>(deltaMs) / 1000.0);
+        const int generatedSamples = qMin(chunkLimit, static_cast<int>(m_simulatedSampleAccumulator));
+        m_simulatedSampleAccumulator -= generatedSamples;
+
+        if (generatedSamples <= 0)
+            return;
+
+        voltages.reserve(generatedSamples);
 
         const double pi = std::acos(-1.0);
-        for (int i = 0; i < chunkSize; ++i) {
-            const double t = elapsedSec + static_cast<double>(m_tickCounter + i) / 1500.0;
+        for (int i = 0; i < generatedSamples; ++i) {
+            const double sampleIndex = static_cast<double>(m_tickCounter + i);
+            const double t = sampleIndex / sampleRateHz;
             const double base = 0.03 * std::sin(2.0 * pi * 1.2 * t);
             const double harmonic = 0.01 * std::sin(2.0 * pi * 5.0 * t);
             const double drift = 0.004 * std::sin(2.0 * pi * 0.08 * t);
