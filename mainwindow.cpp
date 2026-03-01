@@ -17,9 +17,18 @@
 #include <QtCharts/QValueAxis>
 #include <numeric>
 #include <algorithm>
+#include <cmath>
 
 #include "ltr11.h"
 #include "ltr114.h"
+
+static double simulation_sample_rate_hz(DWORD divider)
+{
+    // Сохраняем прежнюю точку: divider=4 -> 5000 Гц.
+    const double baseRateHz = 20000.0;
+    const DWORD safeDivider = qMax<DWORD>(2, divider);
+    return baseRateHz / static_cast<double>(safeDivider);
+}
 
 QString MainWindow::module_name(WORD mid)
 {
@@ -62,7 +71,10 @@ MainWindow::MainWindow(QWidget *parent)
     , axisY(nullptr)
     , m_ltr114Slot(-1)
     , m_captureRunning(false)
+    , m_simulationMode(false)
     , m_tickCounter(0)
+    , m_lastSimulationElapsedMs(0)
+    , m_simulatedSampleAccumulator(0.0)
 {
     ui->setupUi(this);
 
@@ -242,6 +254,21 @@ void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 
 bool MainWindow::open_ltr114_for_capture()
 {
+    const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
+
+    if (m_simulationMode) {
+        m_simulationTime.start();
+        m_lastSimulationElapsedMs = 0;
+        m_simulatedSampleAccumulator = 0.0;
+
+        const double sampleRateHz = simulation_sample_rate_hz(divider);
+        appendInfo(QString("[SIMULATION] Сбор запущен. FreqDivider=%1, частота дискретизации=%2 Гц")
+                       .arg(divider)
+                       .arg(QString::number(sampleRateHz, 'f', 3)));
+        setModuleStatus(m_ltr114Slot, true);
+        return true;
+    }
+
     if (m_crateSerial.isEmpty() || m_ltr114Slot < 0) {
         appendInfo("Не найден LTR114: невозможно запустить сбор.", true);
         return false;
@@ -265,7 +292,6 @@ bool MainWindow::open_ltr114_for_capture()
     TLTR114_LCHANNEL lch_tbl[1];
     lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, 0, LTR114_URANGE_04);
 
-    const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
     m_ltr114->set_freq_divider(divider);
     m_ltr114->set_logical_channels(1, lch_tbl);
     m_ltr114->set_sync_mode(LTR114_SYNCMODE_INTERNAL);
@@ -296,6 +322,7 @@ bool MainWindow::open_ltr114_for_capture()
     setModuleStatus(m_ltr114Slot, true);
     return true;
 }
+
 
 void MainWindow::close_ltr114_capture()
 {
@@ -387,44 +414,82 @@ void MainWindow::on_stop_capture_clicked()
 
 void MainWindow::poll_ltr114_data()
 {
-    if (!m_captureRunning || !m_ltr114)
+    if (!m_captureRunning)
         return;
 
-    int error = 0;
-    QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
+    QVector<double> voltages;
 
-    if (error != 0) {
-        appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
-        on_stop_capture_clicked();
-        return;
-    }
+    if (m_simulationMode) {
+        const int chunkLimit = qMax(16, chunkSizeSpin->value());
+        const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
+        const double sampleRateHz = simulation_sample_rate_hz(divider);
 
-    if (data.isEmpty())
-        return;
+        const qint64 elapsedMs = m_simulationTime.isValid() ? m_simulationTime.elapsed() : 0;
+        const qint64 deltaMs = qMax<qint64>(0, elapsedMs - m_lastSimulationElapsedMs);
+        m_lastSimulationElapsedMs = elapsedMs;
 
-    QVector<double> proc_data(data.size());
-    QVector<double> therm_data(data.size());
-    INT proc_size = data.size();
-    INT therm_count = 0;
+        m_simulatedSampleAccumulator += sampleRateHz * (static_cast<double>(deltaMs) / 1000.0);
+        const int generatedSamples = qMin(chunkLimit, static_cast<int>(m_simulatedSampleAccumulator));
+        m_simulatedSampleAccumulator -= generatedSamples;
 
-    INT proc_result = LTR114_ProcessDataTherm(
-        m_ltr114->handle(),
-        data.data(),
-        proc_data.data(),
-        therm_data.data(),
-        &proc_size,
-        &therm_count,
-        LTR114_CORRECTION_MODE_INIT,
-        LTR114_PROCF_VALUE);
+        if (generatedSamples <= 0)
+            return;
 
-    if (proc_result != LTR_OK) {
-        appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
-        return;
+        voltages.reserve(generatedSamples);
+
+        const double pi = std::acos(-1.0);
+        for (int i = 0; i < generatedSamples; ++i) {
+            const double sampleIndex = static_cast<double>(m_tickCounter + i);
+            const double t = sampleIndex / sampleRateHz;
+            const double base = 0.03 * std::sin(2.0 * pi * 1.2 * t);
+            const double harmonic = 0.01 * std::sin(2.0 * pi * 5.0 * t);
+            const double drift = 0.004 * std::sin(2.0 * pi * 0.08 * t);
+            voltages.append(base + harmonic + drift);
+        }
+    } else {
+        if (!m_ltr114)
+            return;
+
+        int error = 0;
+        QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
+
+        if (error != 0) {
+            appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
+            on_stop_capture_clicked();
+            return;
+        }
+
+        if (data.isEmpty())
+            return;
+
+        QVector<double> proc_data(data.size());
+        QVector<double> therm_data(data.size());
+        INT proc_size = data.size();
+        INT therm_count = 0;
+
+        INT proc_result = LTR114_ProcessDataTherm(
+            m_ltr114->handle(),
+            data.data(),
+            proc_data.data(),
+            therm_data.data(),
+            &proc_size,
+            &therm_count,
+            LTR114_CORRECTION_MODE_INIT,
+            LTR114_PROCF_VALUE);
+
+        if (proc_result != LTR_OK) {
+            appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
+            return;
+        }
+
+        voltages.reserve(therm_count);
+        for (int i = 0; i < therm_count; ++i) {
+            voltages.append(therm_data[i]);
+        }
     }
 
     const int everyN = qMax(1, plotEverySpin->value());
-    for (int i = 0; i < therm_count; ++i) {
-        const double voltage = therm_data[i];
+    for (double voltage : voltages) {
         ++m_tickCounter;
         m_allSamples.append(qMakePair(m_tickCounter, voltage));
 
@@ -441,13 +506,37 @@ void MainWindow::poll_ltr114_data()
     refresh_plot();
 }
 
+
 void MainWindow::init_ltr()
 {
     appendInfo("Начало поиска крейтов...");
 
     auto crates = Crate::enumerate_crates();
     if (crates.isEmpty()) {
-        appendInfo("Нет подключенных крейтов", true);
+        appendInfo("Нет подключенных крейтов. Включаем режим симуляции интерфейса.", true);
+
+        m_simulationMode = true;
+        const int simulatedSlotCount = 8;
+        const int simulatedLtr114Slot = 3;
+        m_crateSerial = "SIM-CRATE-0001";
+
+        for (int s = 1; s <= simulatedSlotCount; ++s) {
+            const bool isLtr114 = (s == simulatedLtr114Slot);
+            QWidget* w = createModuleItemWidget(s, isLtr114 ? "LTR114 (SIM)" : "EMPTY", isLtr114);
+            QListWidgetItem* it = new QListWidgetItem(modulesList);
+            it->setSizeHint(w->sizeHint());
+            modulesList->addItem(it);
+            modulesList->setItemWidget(it, w);
+            moduleWidgets.insert(s, w);
+        }
+
+        appendInfo(QString("[SIMULATION] Создан крейт %1, слотов: %2")
+                       .arg(m_crateSerial)
+                       .arg(simulatedSlotCount));
+        appendInfo(QString("[SIMULATION] Модуль LTR114 виртуально доступен в слоте %1")
+                       .arg(simulatedLtr114Slot));
+
+        run_ltr114_module(m_crateSerial, simulatedLtr114Slot);
         return;
     }
 
@@ -518,3 +607,4 @@ void MainWindow::init_ltr()
     m_crate.reset();
     appendInfo("Поиск модулей завершён. Соединение с крейтом закрыто до старта.");
 }
+
