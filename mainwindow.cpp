@@ -8,6 +8,7 @@
 #include <QFrame>
 #include <QDebug>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QSpinBox>
 #include <QFile>
 #include <QTextStream>
@@ -52,9 +53,10 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
     , startButton(nullptr)
     , stopButton(nullptr)
-    , freqDividerSpin(nullptr)
+    , sampleRateSpin(nullptr)
     , plotEverySpin(nullptr)
     , chunkSizeSpin(nullptr)
+    , saveToFileCheck(nullptr)
     , chartView(nullptr)
     , chart(nullptr)
     , lineSeries(nullptr)
@@ -98,10 +100,11 @@ void MainWindow::init_ui_replace()
     QVBoxLayout* rightLay = new QVBoxLayout(rightPanel);
 
     QHBoxLayout* controlLay = new QHBoxLayout;
-    freqDividerSpin = new QSpinBox(this);
-    freqDividerSpin->setRange(2, 8000);
-    freqDividerSpin->setValue(4);
-    freqDividerSpin->setPrefix("FreqDivider: ");
+    sampleRateSpin = new QSpinBox(this);
+    sampleRateSpin->setRange(1, 4000);
+    sampleRateSpin->setValue(2000);
+    sampleRateSpin->setSuffix(" Гц");
+    sampleRateSpin->setPrefix("Частота: ");
 
     plotEverySpin = new QSpinBox(this);
     plotEverySpin->setRange(1, 10000);
@@ -117,11 +120,15 @@ void MainWindow::init_ui_replace()
     stopButton = new QPushButton("Остановить", this);
     stopButton->setEnabled(false);
 
-    controlLay->addWidget(freqDividerSpin);
+    controlLay->addWidget(sampleRateSpin);
     controlLay->addWidget(plotEverySpin);
     controlLay->addWidget(chunkSizeSpin);
     controlLay->addWidget(startButton);
     controlLay->addWidget(stopButton);
+
+    saveToFileCheck = new QCheckBox("Сохранять файл", this);
+    saveToFileCheck->setChecked(true);
+    controlLay->addWidget(saveToFileCheck);
 
     rightLay->addLayout(controlLay);
 
@@ -265,7 +272,8 @@ bool MainWindow::open_ltr114_for_capture()
     TLTR114_LCHANNEL lch_tbl[1];
     lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, 0, LTR114_URANGE_04);
 
-    const DWORD divider = static_cast<DWORD>(freqDividerSpin->value());
+    const int requestedSampleRate = sampleRateSpin->value();
+    const DWORD divider = static_cast<DWORD>(qBound(2, 8000 / qMax(1, requestedSampleRate), 8000));
     m_ltr114->set_freq_divider(divider);
     m_ltr114->set_logical_channels(1, lch_tbl);
     m_ltr114->set_sync_mode(LTR114_SYNCMODE_INTERNAL);
@@ -290,7 +298,8 @@ bool MainWindow::open_ltr114_for_capture()
     }
 
     double sampleRateHz = static_cast<double>(LTR114_FREQ(m_ltr114->handle())) * 1000.0;
-    appendInfo(QString("Сбор запущен. FreqDivider=%1, частота дискретизации=%2 Гц")
+    appendInfo(QString("Сбор запущен. Частота=%1 Гц (FreqDivider=%2, фактическая=%3 Гц)")
+                   .arg(requestedSampleRate)
                    .arg(divider)
                    .arg(QString::number(sampleRateHz, 'f', 2)));
     setModuleStatus(m_ltr114Slot, true);
@@ -359,7 +368,7 @@ void MainWindow::on_start_capture_clicked()
     m_captureRunning = true;
     startButton->setEnabled(false);
     stopButton->setEnabled(true);
-    freqDividerSpin->setEnabled(false);
+    sampleRateSpin->setEnabled(false);
 
     acquisitionTimer.start(30);
 }
@@ -374,13 +383,17 @@ void MainWindow::on_stop_capture_clicked()
 
     close_ltr114_capture();
 
-    const QString fileName = QString("ltr114_capture_%1.txt")
-                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-    save_capture_to_file(fileName);
+    if (saveToFileCheck->isChecked()) {
+        const QString fileName = QString("ltr114_capture_%1.txt")
+                                     .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+        save_capture_to_file(fileName);
+    } else {
+        appendInfo("Сохранение файла отключено пользователем.");
+    }
 
     startButton->setEnabled(true);
     stopButton->setEnabled(false);
-    freqDividerSpin->setEnabled(true);
+    sampleRateSpin->setEnabled(true);
 
     appendInfo("Сбор остановлен пользователем.");
 }
