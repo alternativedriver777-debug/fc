@@ -19,6 +19,7 @@
 #include <QtCharts/QValueAxis>
 #include <numeric>
 #include <algorithm>
+#include <cmath>
 
 #include "ltr11.h"
 #include "ltr114.h"
@@ -69,6 +70,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_tickCounter(0)
     , m_captureFile(nullptr)
     , m_captureStream(nullptr)
+    , m_simulationMode(false)
+    , m_simulatedSampleAccumulator(0.0)
 {
     ui->setupUi(this);
 
@@ -265,6 +268,12 @@ void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 
 bool MainWindow::open_ltr114_for_capture()
 {
+    if (m_simulationMode) {
+        m_simulatedSampleAccumulator = 0.0;
+        appendInfo(QString("Сбор запущен в режиме симуляции. Частота=%1 Гц").arg(sampleRateSpin->value()));
+        return true;
+    }
+
     if (m_crateSerial.isEmpty() || m_ltr114Slot < 0) {
         appendInfo("Не найден LTR114: невозможно запустить сбор.", true);
         return false;
@@ -324,6 +333,9 @@ bool MainWindow::open_ltr114_for_capture()
 
 void MainWindow::close_ltr114_capture()
 {
+    if (m_simulationMode)
+        return;
+
     if (!m_ltr114)
         return;
 
@@ -486,7 +498,15 @@ void MainWindow::on_stop_capture_clicked()
 
 void MainWindow::poll_ltr114_data()
 {
-    if (!m_captureRunning || !m_ltr114)
+    if (!m_captureRunning)
+        return;
+
+    if (m_simulationMode) {
+        process_voltage_samples(generate_simulated_samples());
+        return;
+    }
+
+    if (!m_ltr114)
         return;
 
     int error = 0;
@@ -521,9 +541,21 @@ void MainWindow::poll_ltr114_data()
         return;
     }
 
+    QVector<double> voltageSamples;
+    voltageSamples.reserve(therm_count);
+    for (int i = 0; i < therm_count; ++i)
+        voltageSamples.append(therm_data[i]);
+
+    process_voltage_samples(voltageSamples);
+}
+
+void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples)
+{
+    if (voltageSamples.isEmpty())
+        return;
+
     const int everyN = qMax(1, plotEverySpin->value());
-    for (int i = 0; i < therm_count; ++i) {
-        const double voltageV = therm_data[i];
+    for (double voltageV : voltageSamples) {
         ++m_tickCounter;
         m_allSamples.append(qMakePair(m_tickCounter, voltageV));
         m_pendingFileSamples.append(qMakePair(m_tickCounter, voltageV));
@@ -551,13 +583,57 @@ void MainWindow::poll_ltr114_data()
     refresh_plot();
 }
 
+QVector<double> MainWindow::generate_simulated_samples()
+{
+    QVector<double> samples;
+    const double sampleRate = static_cast<double>(qMax(1, sampleRateSpin->value()));
+    const double timerPeriodSec = static_cast<double>(acquisitionTimer.interval()) / 1000.0;
+    m_simulatedSampleAccumulator += sampleRate * timerPeriodSec;
+
+    int samplesToGenerate = static_cast<int>(m_simulatedSampleAccumulator);
+    m_simulatedSampleAccumulator -= samplesToGenerate;
+
+    if (samplesToGenerate <= 0)
+        return samples;
+
+    samples.reserve(samplesToGenerate);
+    const double dt = 1.0 / sampleRate;
+    const double freq1 = qMin(5.0, sampleRate / 20.0);
+    const double freq2 = qMin(13.0, sampleRate / 12.0);
+    constexpr double pi = 3.14159265358979323846;
+
+    for (int i = 0; i < samplesToGenerate; ++i) {
+        const double t = (static_cast<double>(m_tickCounter) + static_cast<double>(i) + 1.0) * dt;
+        const double signal = 0.0012 * std::sin(2.0 * pi * freq1 * t)
+                            + 0.00045 * std::sin(2.0 * pi * freq2 * t + 0.8)
+                            + 0.00015 * std::sin(2.0 * pi * 0.35 * t);
+        samples.append(signal);
+    }
+
+    return samples;
+}
+
 void MainWindow::init_ltr()
 {
     appendInfo("Начало поиска крейтов...");
 
     auto crates = Crate::enumerate_crates();
     if (crates.isEmpty()) {
-        appendInfo("Нет подключенных крейтов", true);
+        m_simulationMode = true;
+        m_crateSerial = "SIMULATED_CRATE";
+        m_ltr114Slot = 1;
+
+        appendInfo("Нет подключенных крейтов. Включен режим симуляции.", true);
+
+        QWidget* w = createModuleItemWidget(1, "LTR114 (SIM)", true);
+        QListWidgetItem* it = new QListWidgetItem(modulesList);
+        it->setSizeHint(w->sizeHint());
+        modulesList->addItem(it);
+        modulesList->setItemWidget(it, w);
+        moduleWidgets.insert(1, w);
+
+        appendInfo("Симулированный крейт создан, модуль LTR114 виртуально доступен в слоте 1.");
+        run_ltr114_module(m_crateSerial, m_ltr114Slot);
         return;
     }
 
