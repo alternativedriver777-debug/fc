@@ -13,12 +13,14 @@
 #include <QComboBox>
 #include <QFile>
 #include <QTextStream>
+#include <QRandomGenerator>
 #include <QtCharts/QChart>
 #include <QtCharts/QChartView>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 #include <numeric>
 #include <algorithm>
+#include <cmath>
 
 #include "ltr11.h"
 #include "ltr114.h"
@@ -69,6 +71,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_tickCounter(0)
     , m_captureFile(nullptr)
     , m_captureStream(nullptr)
+    , m_simulationMode(false)
+    , m_simulationPhase(0.0)
 {
     ui->setupUi(this);
 
@@ -265,6 +269,12 @@ void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 
 bool MainWindow::open_ltr114_for_capture()
 {
+    if (m_simulationMode) {
+        appendInfo("Симуляция: запуск виртуального LTR114 без проверки подключения.");
+        setModuleStatus(m_ltr114Slot, true);
+        return true;
+    }
+
     if (m_crateSerial.isEmpty() || m_ltr114Slot < 0) {
         appendInfo("Не найден LTR114: невозможно запустить сбор.", true);
         return false;
@@ -324,6 +334,9 @@ bool MainWindow::open_ltr114_for_capture()
 
 void MainWindow::close_ltr114_capture()
 {
+    if (m_simulationMode)
+        return;
+
     if (!m_ltr114)
         return;
 
@@ -436,6 +449,7 @@ void MainWindow::on_start_capture_clicked()
     m_plotPoints.clear();
     m_pendingFileSamples.clear();
     m_tickCounter = 0;
+    m_simulationPhase = 0.0;
     refresh_plot();
 
     if (saveToFileCheck->isChecked() && !open_capture_file())
@@ -485,44 +499,67 @@ void MainWindow::on_stop_capture_clicked()
 
 void MainWindow::poll_ltr114_data()
 {
-    if (!m_captureRunning || !m_ltr114)
+    if (!m_captureRunning)
         return;
 
-    int error = 0;
-    QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
+    QVector<double> therm_data;
 
-    if (error != 0) {
-        appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
-        on_stop_capture_clicked();
-        return;
-    }
+    if (m_simulationMode) {
+        const int sampleCount = qMax(1, chunkSizeSpin->value());
+        therm_data.reserve(sampleCount);
+        const double dt = 1.0 / qMax(1, sampleRateSpin->value());
+        for (int i = 0; i < sampleCount; ++i) {
+            const double noise = (QRandomGenerator::global()->generateDouble() - 0.5) * 0.0008;
+            const double signal = 0.006 * std::sin(m_simulationPhase)
+                                + 0.002 * std::sin(m_simulationPhase * 0.13)
+                                + noise;
+            therm_data.append(signal);
+            constexpr double twoPi = 6.28318530717958647692;
+            m_simulationPhase += dt * twoPi * 3.0;
+            if (m_simulationPhase > twoPi)
+                m_simulationPhase = std::fmod(m_simulationPhase, twoPi);
+        }
+    } else {
+        if (!m_ltr114)
+            return;
 
-    if (data.isEmpty())
-        return;
+        int error = 0;
+        QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
 
-    QVector<double> proc_data(data.size());
-    QVector<double> therm_data(data.size());
-    INT proc_size = data.size();
-    INT therm_count = 0;
+        if (error != 0) {
+            appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
+            on_stop_capture_clicked();
+            return;
+        }
 
-    INT proc_result = LTR114_ProcessDataTherm(
-        m_ltr114->handle(),
-        data.data(),
-        proc_data.data(),
-        therm_data.data(),
-        &proc_size,
-        &therm_count,
-        LTR114_CORRECTION_MODE_INIT,
-        LTR114_PROCF_VALUE);
+        if (data.isEmpty())
+            return;
 
-    if (proc_result != LTR_OK) {
-        appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
-        return;
+        QVector<double> proc_data(data.size());
+        therm_data.resize(data.size());
+        INT proc_size = data.size();
+        INT therm_count = 0;
+
+        INT proc_result = LTR114_ProcessDataTherm(
+            m_ltr114->handle(),
+            data.data(),
+            proc_data.data(),
+            therm_data.data(),
+            &proc_size,
+            &therm_count,
+            LTR114_CORRECTION_MODE_INIT,
+            LTR114_PROCF_VALUE);
+
+        if (proc_result != LTR_OK) {
+            appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
+            return;
+        }
+
+        therm_data.resize(therm_count);
     }
 
     const int everyN = qMax(1, plotEverySpin->value());
-    for (int i = 0; i < therm_count; ++i) {
-        const double voltageV = therm_data[i];
+    for (double voltageV : therm_data) {
         ++m_tickCounter;
         m_allSamples.append(qMakePair(m_tickCounter, voltageV));
         m_pendingFileSamples.append(qMakePair(m_tickCounter, voltageV));
@@ -556,10 +593,41 @@ void MainWindow::init_ltr()
 
     auto crates = Crate::enumerate_crates();
     if (crates.isEmpty()) {
-        appendInfo("Нет подключенных крейтов", true);
+        appendInfo("Нет подключенных крейтов. Включаем режим симуляции.", true);
+
+        m_simulationMode = true;
+        m_crateSerial = "SIMULATED_CRATE";
+        const int simulatedSlotCount = 16;
+
+        for (int s = 1; s <= simulatedSlotCount; ++s) {
+            QWidget* w = createModuleItemWidget(s, "EMPTY", false);
+            QListWidgetItem* it = new QListWidgetItem(modulesList);
+            it->setSizeHint(w->sizeHint());
+            modulesList->addItem(it);
+            modulesList->setItemWidget(it, w);
+            moduleWidgets.insert(s, w);
+        }
+
+        const int simulatedLtr114Slot = 3;
+        QWidget* ltr114Widget = createModuleItemWidget(simulatedLtr114Slot, "LTR114 (SIM)", true);
+        if (QListWidgetItem* item = modulesList->item(simulatedLtr114Slot - 1)) {
+            modulesList->setItemWidget(item, ltr114Widget);
+            moduleWidgets[simulatedLtr114Slot] = ltr114Widget;
+        }
+
+        const int simulatedLtr11Slot = 2;
+        QWidget* ltr11Widget = createModuleItemWidget(simulatedLtr11Slot, "LTR11 (SIM)", true);
+        if (QListWidgetItem* item = modulesList->item(simulatedLtr11Slot - 1)) {
+            modulesList->setItemWidget(item, ltr11Widget);
+            moduleWidgets[simulatedLtr11Slot] = ltr11Widget;
+        }
+
+        appendInfo("Симуляция: крейт SIMULATED_CRATE, LTR11 слот 2, LTR114 слот 3.");
+        run_ltr114_module(m_crateSerial, simulatedLtr114Slot);
         return;
     }
 
+    m_simulationMode = false;
     appendInfo(QString("Найдено %1 крейт(ов):").arg(crates.size()));
     for (const auto& s : crates) appendInfo(QString("  %1").arg(s));
 
