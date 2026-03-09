@@ -27,6 +27,9 @@ class LTR114;
 class QPushButton;
 class QSpinBox;
 class QCheckBox;
+class QComboBox;
+class QFile;
+class QTextStream;
 
 QT_BEGIN_NAMESPACE
 class QValueAxis;
@@ -50,7 +53,11 @@ private:
     bool open_ltr114_for_capture();
     void close_ltr114_capture();
     void refresh_plot();
-    bool save_capture_to_file(const QString& file_path);
+    bool open_capture_file();
+    bool append_samples_to_file(const QVector<QPair<quint64, double>>& samples);
+    void close_capture_file();
+    double current_unit_factor() const;
+    QString current_unit_name() const;
 
     const int CONNECTION_TIMEOUT_MS = 10000;
     const int POLL_INTERVAL_MS = 200;
@@ -68,6 +75,7 @@ private:
     QSpinBox* plotEverySpin;
     QSpinBox* chunkSizeSpin;
     QCheckBox* saveToFileCheck;
+    QComboBox* unitCombo;
     QChartView* chartView;
     QChart* chart;
     QLineSeries* lineSeries;
@@ -81,6 +89,10 @@ private:
     quint64 m_tickCounter;
     QVector<QPointF> m_plotPoints;
     QVector<QPair<quint64, double>> m_allSamples;
+    QVector<QPair<quint64, double>> m_pendingFileSamples;
+    QFile* m_captureFile;
+    QTextStream* m_captureStream;
+    QString m_captureFilePath;
 
     // map slot -> widget (for quick status updates)
     QMap<int, QWidget*> moduleWidgets;

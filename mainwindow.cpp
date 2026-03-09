@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QComboBox>
 #include <QFile>
 #include <QTextStream>
 #include <QtCharts/QChart>
@@ -57,6 +58,7 @@ MainWindow::MainWindow(QWidget *parent)
     , plotEverySpin(nullptr)
     , chunkSizeSpin(nullptr)
     , saveToFileCheck(nullptr)
+    , unitCombo(nullptr)
     , chartView(nullptr)
     , chart(nullptr)
     , lineSeries(nullptr)
@@ -65,6 +67,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_ltr114Slot(-1)
     , m_captureRunning(false)
     , m_tickCounter(0)
+    , m_captureFile(nullptr)
+    , m_captureStream(nullptr)
 {
     ui->setupUi(this);
 
@@ -78,6 +82,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    close_capture_file();
     close_ltr114_capture();
     delete ui;
 }
@@ -130,6 +135,12 @@ void MainWindow::init_ui_replace()
     saveToFileCheck->setChecked(true);
     controlLay->addWidget(saveToFileCheck);
 
+    unitCombo = new QComboBox(this);
+    unitCombo->addItem("mV", "mV");
+    unitCombo->addItem("V", "V");
+    controlLay->addWidget(new QLabel("Единицы:", this));
+    controlLay->addWidget(unitCombo);
+
     rightLay->addLayout(controlLay);
 
     infoText = new QTextEdit(this);
@@ -147,6 +158,11 @@ void MainWindow::init_ui_replace()
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::on_start_capture_clicked);
     connect(stopButton, &QPushButton::clicked, this, &MainWindow::on_stop_capture_clicked);
+    connect(unitCombo, &QComboBox::currentTextChanged, this, [this](const QString&) {
+        axisY->setTitleText(QString("Напряжение, %1").arg(current_unit_name()));
+        axisY->setLabelFormat(current_unit_name() == "V" ? "%.6f" : "%.3f");
+        refresh_plot();
+    });
 
     appendInfo("Информационный виджет создан.");
 }
@@ -166,9 +182,9 @@ void MainWindow::setup_plot()
     axisX->setRange(0, 100);
 
     axisY = new QValueAxis();
-    axisY->setTitleText("Напряжение, В");
-    axisY->setLabelFormat("%.6f");
-    axisY->setRange(-0.1, 0.1);
+    axisY->setTitleText("Напряжение, mV");
+    axisY->setLabelFormat("%.3f");
+    axisY->setRange(-100.0, 100.0);
 
     chart->addAxis(axisX, Qt::AlignBottom);
     chart->addAxis(axisY, Qt::AlignLeft);
@@ -318,15 +334,22 @@ void MainWindow::close_ltr114_capture()
 
 void MainWindow::refresh_plot()
 {
-    lineSeries->replace(m_plotPoints);
+    QVector<QPointF> scaledPoints;
+    scaledPoints.reserve(m_plotPoints.size());
+    const qreal factor = current_unit_factor();
+    for (const QPointF& p : m_plotPoints) {
+        scaledPoints.append(QPointF(p.x(), p.y() * factor));
+    }
 
-    if (!m_plotPoints.isEmpty()) {
-        const qreal minX = m_plotPoints.first().x();
-        const qreal maxX = m_plotPoints.last().x();
+    lineSeries->replace(scaledPoints);
+
+    if (!scaledPoints.isEmpty()) {
+        const qreal minX = scaledPoints.first().x();
+        const qreal maxX = scaledPoints.last().x();
         axisX->setRange(minX, qMax(minX + 10.0, maxX));
 
-        qreal maxAbsV = 0.001;
-        for (const QPointF& p : m_plotPoints)
+        qreal maxAbsV = (current_unit_name() == "V") ? 0.001 : 1.0;
+        for (const QPointF& p : scaledPoints)
             maxAbsV = qMax(maxAbsV, std::abs(p.y()));
 
         const qreal margin = maxAbsV * 0.1;
@@ -334,22 +357,74 @@ void MainWindow::refresh_plot()
     }
 }
 
-bool MainWindow::save_capture_to_file(const QString& file_path)
+double MainWindow::current_unit_factor() const
 {
-    QFile file(file_path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        appendInfo(QString("Не удалось открыть файл %1 для записи").arg(file_path), true);
+    return (unitCombo && unitCombo->currentData().toString() == "V") ? 1.0 : 1000.0;
+}
+
+QString MainWindow::current_unit_name() const
+{
+    return (unitCombo && unitCombo->currentData().toString() == "V") ? "V" : "mV";
+}
+
+bool MainWindow::open_capture_file()
+{
+    if (m_captureFile)
+        return true;
+
+    m_captureFilePath = QString("ltr114_capture_%1.txt")
+                            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    m_captureFile = new QFile(m_captureFilePath);
+    if (!m_captureFile->open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        appendInfo(QString("Не удалось открыть файл %1 для записи").arg(m_captureFilePath), true);
+        delete m_captureFile;
+        m_captureFile = nullptr;
         return false;
     }
 
-    QTextStream out(&file);
-    for (const auto& sample : m_allSamples) {
-        out << sample.first << ";" << QString::number(sample.second, 'f', 9) << "\n";
+    m_captureStream = new QTextStream(m_captureFile);
+    (*m_captureStream) << sampleRateSpin->value() << "    " << current_unit_name() << "    LTR114\n";
+    m_captureStream->flush();
+    return true;
+}
+
+bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& samples)
+{
+    if (samples.isEmpty())
+        return true;
+
+    if (!open_capture_file() || !m_captureStream || !m_captureFile)
+        return false;
+
+    const double factor = current_unit_factor();
+    const int precision = current_unit_name() == "V" ? 9 : 3;
+
+    for (const auto& sample : samples) {
+        (*m_captureStream) << sample.first << ";" << QString::number(sample.second * factor, 'f', precision) << "\n";
     }
 
-    file.close();
-    appendInfo(QString("Файл сохранён: %1 (%2 строк)").arg(file_path).arg(m_allSamples.size()));
-    return true;
+    m_captureStream->flush();
+    return (m_captureStream->status() == QTextStream::Ok);
+}
+
+void MainWindow::close_capture_file()
+{
+    if (m_captureStream) {
+        m_captureStream->flush();
+        delete m_captureStream;
+        m_captureStream = nullptr;
+    }
+
+    if (m_captureFile) {
+        m_captureFile->close();
+        delete m_captureFile;
+        m_captureFile = nullptr;
+        if (!m_captureFilePath.isEmpty()) {
+            appendInfo(QString("Файл сохранён: %1").arg(m_captureFilePath));
+            m_captureFilePath.clear();
+        }
+    }
 }
 
 void MainWindow::on_start_capture_clicked()
@@ -359,16 +434,23 @@ void MainWindow::on_start_capture_clicked()
 
     m_allSamples.clear();
     m_plotPoints.clear();
+    m_pendingFileSamples.clear();
     m_tickCounter = 0;
     refresh_plot();
 
-    if (!open_ltr114_for_capture())
+    if (saveToFileCheck->isChecked() && !open_capture_file())
         return;
+
+    if (!open_ltr114_for_capture()) {
+        close_capture_file();
+        return;
+    }
 
     m_captureRunning = true;
     startButton->setEnabled(false);
     stopButton->setEnabled(true);
     sampleRateSpin->setEnabled(false);
+    unitCombo->setEnabled(false);
 
     acquisitionTimer.start(30);
 }
@@ -384,9 +466,11 @@ void MainWindow::on_stop_capture_clicked()
     close_ltr114_capture();
 
     if (saveToFileCheck->isChecked()) {
-        const QString fileName = QString("ltr114_capture_%1.txt")
-                                     .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-        save_capture_to_file(fileName);
+        if (!append_samples_to_file(m_pendingFileSamples)) {
+            appendInfo("Ошибка дозаписи данных в файл.", true);
+        }
+        m_pendingFileSamples.clear();
+        close_capture_file();
     } else {
         appendInfo("Сохранение файла отключено пользователем.");
     }
@@ -394,6 +478,7 @@ void MainWindow::on_stop_capture_clicked()
     startButton->setEnabled(true);
     stopButton->setEnabled(false);
     sampleRateSpin->setEnabled(true);
+    unitCombo->setEnabled(true);
 
     appendInfo("Сбор остановлен пользователем.");
 }
@@ -437,12 +522,23 @@ void MainWindow::poll_ltr114_data()
 
     const int everyN = qMax(1, plotEverySpin->value());
     for (int i = 0; i < therm_count; ++i) {
-        const double voltage = therm_data[i];
+        const double voltageV = therm_data[i];
         ++m_tickCounter;
-        m_allSamples.append(qMakePair(m_tickCounter, voltage));
+        m_allSamples.append(qMakePair(m_tickCounter, voltageV));
+        m_pendingFileSamples.append(qMakePair(m_tickCounter, voltageV));
 
         if ((m_tickCounter % static_cast<quint64>(everyN)) == 0) {
-            m_plotPoints.append(QPointF(static_cast<qreal>(m_tickCounter), voltage));
+            m_plotPoints.append(QPointF(static_cast<qreal>(m_tickCounter), voltageV));
+        }
+    }
+
+    if (saveToFileCheck->isChecked() && !m_pendingFileSamples.isEmpty()) {
+        const int flushEverySamples = qMax(1, sampleRateSpin->value());
+        if (m_pendingFileSamples.size() >= flushEverySamples) {
+            if (!append_samples_to_file(m_pendingFileSamples)) {
+                appendInfo("Ошибка записи в файл во время сбора.", true);
+            }
+            m_pendingFileSamples.clear();
         }
     }
 
