@@ -93,6 +93,8 @@ private:
     QFile* m_captureFile;
     QTextStream* m_captureStream;
     QString m_captureFilePath;
+    bool m_simulationMode;
+    double m_simulationPhase;
 
     // map slot -> widget (for quick status updates)
     QMap<int, QWidget*> moduleWidgets;
