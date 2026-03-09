@@ -344,8 +344,9 @@ void MainWindow::refresh_plot()
     lineSeries->replace(scaledPoints);
 
     if (!scaledPoints.isEmpty()) {
-        const qreal minX = scaledPoints.first().x();
         const qreal maxX = scaledPoints.last().x();
+        const qreal minWindowX = qMax<qreal>(1.0, maxX - static_cast<qreal>(PLOT_WINDOW_TICKS) + 1.0);
+        const qreal minX = qMax<qreal>(scaledPoints.first().x(), minWindowX);
         axisX->setRange(minX, qMax(minX + 10.0, maxX));
 
         qreal maxAbsV = (current_unit_name() == "V") ? 0.001 : 1.0;
@@ -542,7 +543,7 @@ void MainWindow::poll_ltr114_data()
         }
     }
 
-    const int maxPlotPoints = 5000;
+    const int maxPlotPoints = static_cast<int>(qMax<quint64>(1, PLOT_WINDOW_TICKS / static_cast<quint64>(everyN) + 2));
     if (m_plotPoints.size() > maxPlotPoints) {
         m_plotPoints.remove(0, m_plotPoints.size() - maxPlotPoints);
     }

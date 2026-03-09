@@ -61,6 +61,7 @@ private:
 
     const int CONNECTION_TIMEOUT_MS = 10000;
     const int POLL_INTERVAL_MS = 200;
+    const quint64 PLOT_WINDOW_TICKS = 5000; // ширина наблюдаемого окна по X (в тиках)
 
     Ui::MainWindow *ui;
     std::unique_ptr<Crate> m_crate;        // управление крейтом
