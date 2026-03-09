@@ -94,6 +94,8 @@ private:
     QFile* m_captureFile;
     QTextStream* m_captureStream;
     QString m_captureFilePath;
+    bool m_simulationMode;
+    double m_simulatedSampleAccumulator;
 
     // map slot -> widget (for quick status updates)
     QMap<int, QWidget*> moduleWidgets;
@@ -109,6 +111,8 @@ private:
     void setModuleStatus(int slot, bool ok);
     void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
     void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
+    void process_voltage_samples(const QVector<double>& voltageSamples);
+    QVector<double> generate_simulated_samples();
 
 private slots:
     void on_start_capture_clicked();
