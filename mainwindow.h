@@ -122,6 +122,8 @@ private:
     QThread* m_ltr212Thread = nullptr;
     Ltr114Worker* m_ltr114Worker = nullptr;
     Ltr212Worker* m_ltr212Worker = nullptr;
+    QThread* m_simulationThread = nullptr;
+    SimulationWorker* m_simulationWorker = nullptr;
 
     bool m_captureRunning = false;
     quint64 m_tickCounter = 0;
@@ -133,6 +135,8 @@ private:
     QString m_captureFilePath;
     bool m_simulationMode = false;
     double m_simulatedSampleAccumulator = 0.0;
+    int m_simulatedSampleRate = 2000;
+    quint64 m_simulatedSignalTick = 0;
 
     QMap<int, QWidget*> moduleWidgets;
 

@@ -2,6 +2,7 @@
 
 #include <QThread>
 #include <QMutexLocker>
+#include <utility>
 
 #include "ltr114.h"
 #include "ltr212.h"
@@ -228,3 +229,35 @@ QVector<DWORD> Ltr212Worker::trimByStartMark(const QVector<DWORD>& raw, const QV
 
     return {};
 }
+
+
+SimulationWorker::SimulationWorker(Generator generator, QObject* parent)
+    : QObject(parent)
+    , m_generator(std::move(generator))
+{
+}
+
+void SimulationWorker::run()
+{
+    m_running.store(true);
+
+    while (m_running.load()) {
+        if (m_generator) {
+            const QVector<double> samples = m_generator();
+            if (!samples.isEmpty()) {
+                emit newVoltageSamples(samples);
+            }
+        }
+
+        QThread::msleep(30);
+    }
+
+    m_running.store(false);
+    emit finished();
+}
+
+void SimulationWorker::stopAcquisition()
+{
+    m_running.store(false);
+}
+

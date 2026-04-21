@@ -272,6 +272,7 @@ bool MainWindow::open_ltr114_for_capture()
 {
     if (m_simulationMode) {
         m_simulatedSampleAccumulator = 0.0;
+        m_simulatedSignalTick = 0;
         appendInfo(QString("Сбор запущен в режиме симуляции. Частота=%1 Гц").arg(sampleRateSpin->value()));
         return true;
     }
@@ -549,6 +550,35 @@ void MainWindow::on_start_capture_clicked()
     if (saveToFileCheck->isChecked() && !open_capture_file())
         return;
 
+    if (m_simulationMode) {
+        m_captureRunning = true;
+        m_simulatedSampleRate = qMax(1, sampleRateSpin->value());
+        m_simulatedSampleAccumulator = 0.0;
+        m_simulatedSignalTick = 0;
+
+        startButton->setEnabled(false);
+        stopButton->setEnabled(true);
+        sampleRateSpin->setEnabled(false);
+        unitCombo->setEnabled(false);
+
+        m_simulationThread = new QThread(this);
+        m_simulationWorker = new SimulationWorker([this]() {
+            return generate_simulated_samples();
+        });
+        m_simulationWorker->moveToThread(m_simulationThread);
+
+        connect(m_simulationThread, &QThread::started, m_simulationWorker, &SimulationWorker::run);
+        connect(m_simulationWorker, &SimulationWorker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_simulationWorker, &SimulationWorker::finished, m_simulationThread, &QThread::quit);
+        connect(m_simulationThread, &QThread::finished, m_simulationWorker, &QObject::deleteLater);
+
+        m_usingLtr114 = false;
+        m_usingLtr212 = false;
+        appendInfo("Симуляция запущена в выделенном потоке.");
+        m_simulationThread->start();
+        return;
+    }
+
     // === НАСТРАИВАЕМ СИНХРОМЕТКИ ===
     setup_crate_sync();
 
@@ -701,7 +731,7 @@ void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples)
 QVector<double> MainWindow::generate_simulated_samples()
 {
     QVector<double> samples;
-    const double sampleRate = static_cast<double>(qMax(1, sampleRateSpin->value()));
+    const double sampleRate = static_cast<double>(qMax(1, m_simulatedSampleRate));
     const double timerPeriodSec = 0.03;
     m_simulatedSampleAccumulator += sampleRate * timerPeriodSec;
 
@@ -718,13 +748,14 @@ QVector<double> MainWindow::generate_simulated_samples()
     constexpr double pi = 3.14159265358979323846;
 
     for (int i = 0; i < samplesToGenerate; ++i) {
-        const double t = (static_cast<double>(m_tickCounter) + static_cast<double>(i) + 1.0) * dt;
+        const double t = (static_cast<double>(m_simulatedSignalTick) + static_cast<double>(i) + 1.0) * dt;
         const double signal = 0.0012 * std::sin(2.0 * pi * freq1 * t)
                             + 0.00045 * std::sin(2.0 * pi * freq2 * t + 0.8)
                             + 0.00015 * std::sin(2.0 * pi * 0.35 * t);
         samples.append(signal);
     }
 
+    m_simulatedSignalTick += static_cast<quint64>(samplesToGenerate);
     return samples;
 }
 
@@ -839,6 +870,9 @@ void MainWindow::stop_worker_threads()
     if (m_ltr212Worker) {
         QMetaObject::invokeMethod(m_ltr212Worker, "stopAcquisition", Qt::QueuedConnection);
     }
+    if (m_simulationWorker) {
+        QMetaObject::invokeMethod(m_simulationWorker, "stopAcquisition", Qt::QueuedConnection);
+    }
 
     if (m_ltr114Thread) {
         m_ltr114Thread->quit();
@@ -854,5 +888,13 @@ void MainWindow::stop_worker_threads()
         m_ltr212Thread->deleteLater();
         m_ltr212Thread = nullptr;
         m_ltr212Worker = nullptr;
+    }
+
+    if (m_simulationThread) {
+        m_simulationThread->quit();
+        m_simulationThread->wait();
+        m_simulationThread->deleteLater();
+        m_simulationThread = nullptr;
+        m_simulationWorker = nullptr;
     }
 }
