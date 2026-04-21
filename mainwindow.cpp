@@ -63,6 +63,7 @@ MainWindow::MainWindow(QWidget *parent)
     , chartView(nullptr)
     , chart(nullptr)
     , lineSeries(nullptr)
+    , lineSeries212(nullptr)
     , axisX(nullptr)
     , axisY(nullptr)
     , m_ltr114Slot(-1)
@@ -73,6 +74,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_captureStream(nullptr)
     , m_simulationMode(false)
     , m_simulatedSampleAccumulator(0.0)
+    , m_simulatedSampleAccumulator212(0.0)
 {
     ui->setupUi(this);
 
@@ -175,10 +177,16 @@ void MainWindow::init_ui_replace()
 void MainWindow::setup_plot()
 {
     lineSeries = new QLineSeries(this);
+    lineSeries212 = new QLineSeries(this);
+    lineSeries->setName("LTR114");
+    lineSeries212->setName("LTR212");
+    lineSeries->setColor(Qt::blue);
+    lineSeries212->setColor(Qt::red);
 
     chart = new QChart();
     chart->addSeries(lineSeries);
-    chart->legend()->hide();
+    chart->addSeries(lineSeries212);
+    chart->legend()->setVisible(true);
     chart->setTitle("LTR: Тики / Напряжение");
 
     axisX = new QValueAxis();
@@ -195,6 +203,8 @@ void MainWindow::setup_plot()
     chart->addAxis(axisY, Qt::AlignLeft);
     lineSeries->attachAxis(axisX);
     lineSeries->attachAxis(axisY);
+    lineSeries212->attachAxis(axisX);
+    lineSeries212->attachAxis(axisY);
 
     chartView = new QChartView(chart, this);
     chartView->setMinimumHeight(280);
@@ -429,28 +439,43 @@ void MainWindow::run_ltr212_module(const QString& crate_sn, int ltr212_slot)
 
 void MainWindow::refresh_plot()
 {
-    QVector<QPointF> scaledPoints;
-    scaledPoints.reserve(m_plotPoints.size());
     const qreal factor = current_unit_factor();
-    for (const QPointF& p : m_plotPoints) {
-        scaledPoints.append(QPointF(p.x(), p.y() * factor));
+    QVector<QPointF> scaledPoints114;
+    scaledPoints114.reserve(m_plotPoints.size());
+    for (const QPointF& p : m_plotPoints)
+        scaledPoints114.append(QPointF(p.x(), p.y() * factor));
+    lineSeries->replace(scaledPoints114);
+
+    QVector<QPointF> scaledPoints212;
+    scaledPoints212.reserve(m_plotPoints212.size());
+    for (const QPointF& p : m_plotPoints212)
+        scaledPoints212.append(QPointF(p.x(), p.y() * factor));
+    lineSeries212->replace(scaledPoints212);
+
+    const bool has114 = !scaledPoints114.isEmpty();
+    const bool has212 = !scaledPoints212.isEmpty();
+    if (!has114 && !has212)
+        return;
+
+    qreal firstX = has114 ? scaledPoints114.first().x() : scaledPoints212.first().x();
+    qreal maxX = has114 ? scaledPoints114.last().x() : scaledPoints212.last().x();
+    if (has114 && has212) {
+        firstX = qMin(firstX, scaledPoints212.first().x());
+        maxX = qMax(maxX, scaledPoints212.last().x());
     }
 
-    lineSeries->replace(scaledPoints);
+    const qreal minWindowX = qMax<qreal>(1.0, maxX - static_cast<qreal>(PLOT_WINDOW_TICKS) + 1.0);
+    const qreal minX = qMax(firstX, minWindowX);
+    axisX->setRange(minX, qMax(minX + 10.0, maxX));
 
-    if (!scaledPoints.isEmpty()) {
-        const qreal maxX = scaledPoints.last().x();
-        const qreal minWindowX = qMax<qreal>(1.0, maxX - static_cast<qreal>(PLOT_WINDOW_TICKS) + 1.0);
-        const qreal minX = qMax<qreal>(scaledPoints.first().x(), minWindowX);
-        axisX->setRange(minX, qMax(minX + 10.0, maxX));
+    qreal maxAbsV = (current_unit_name() == "V") ? 0.001 : 1.0;
+    for (const QPointF& p : scaledPoints114)
+        maxAbsV = qMax(maxAbsV, std::abs(p.y()));
+    for (const QPointF& p : scaledPoints212)
+        maxAbsV = qMax(maxAbsV, std::abs(p.y()));
 
-        qreal maxAbsV = (current_unit_name() == "V") ? 0.001 : 1.0;
-        for (const QPointF& p : scaledPoints)
-            maxAbsV = qMax(maxAbsV, std::abs(p.y()));
-
-        const qreal margin = maxAbsV * 0.1;
-        axisY->setRange(-(maxAbsV + margin), maxAbsV + margin);
-    }
+    const qreal margin = maxAbsV * 0.1;
+    axisY->setRange(-(maxAbsV + margin), maxAbsV + margin);
 }
 
 double MainWindow::current_unit_factor() const
@@ -543,8 +568,10 @@ void MainWindow::on_start_capture_clicked()
 
     m_allSamples.clear();
     m_plotPoints.clear();
+    m_plotPoints212.clear();
     m_pendingFileSamples.clear();
     m_tickCounter = 0;
+    m_tickCounter212 = 0;
     refresh_plot();
 
     if (saveToFileCheck->isChecked() && !open_capture_file())
@@ -554,7 +581,9 @@ void MainWindow::on_start_capture_clicked()
         m_captureRunning = true;
         m_simulatedSampleRate = qMax(1, sampleRateSpin->value());
         m_simulatedSampleAccumulator = 0.0;
+        m_simulatedSampleAccumulator212 = 0.0;
         m_simulatedSignalTick = 0;
+        m_simulatedSignalTick212 = 0;
 
         startButton->setEnabled(false);
         stopButton->setEnabled(true);
@@ -565,7 +594,10 @@ void MainWindow::on_start_capture_clicked()
             m_simulationTimer = new QTimer(this);
             connect(m_simulationTimer, &QTimer::timeout, this, [this]() {
                 if (m_captureRunning && m_simulationMode) {
-                    process_voltage_samples(generate_simulated_samples());
+                    process_voltage_samples(generate_simulated_samples(0), 0);
+                    if (m_simulateTwoModules) {
+                        process_voltage_samples(generate_simulated_samples(1), 1);
+                    }
                 }
             });
         }
@@ -630,7 +662,9 @@ void MainWindow::on_start_capture_clicked()
         m_ltr114Worker->moveToThread(m_ltr114Thread);
 
         connect(m_ltr114Thread, &QThread::started, m_ltr114Worker, &Ltr114Worker::run);
-        connect(m_ltr114Worker, &Ltr114Worker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_ltr114Worker, &Ltr114Worker::newVoltageSamples, this, [this](const QVector<double>& samples) {
+            process_voltage_samples(samples, 0);
+        }, Qt::QueuedConnection);
         connect(m_ltr114Worker, &Ltr114Worker::acquisitionError, this, [this](const QString& error) {
             appendInfo(error, true);
             QMetaObject::invokeMethod(this, "on_stop_capture_clicked", Qt::QueuedConnection);
@@ -647,7 +681,9 @@ void MainWindow::on_start_capture_clicked()
         m_ltr212Worker->moveToThread(m_ltr212Thread);
 
         connect(m_ltr212Thread, &QThread::started, m_ltr212Worker, &Ltr212Worker::run);
-        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, [this](const QVector<double>& samples) {
+            process_voltage_samples(samples, 1);
+        }, Qt::QueuedConnection);
         connect(m_ltr212Worker, &Ltr212Worker::acquisitionError, this, [this](const QString& error) {
             appendInfo(error, true);
             QMetaObject::invokeMethod(this, "on_stop_capture_clicked", Qt::QueuedConnection);
@@ -695,19 +731,22 @@ void MainWindow::on_stop_capture_clicked()
     appendInfo("Сбор остановлен пользователем.");
 }
 
-void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples)
+void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples, int moduleId)
 {
     if (voltageSamples.isEmpty())
         return;
 
     const int everyN = qMax(1, plotEverySpin->value());
-    for (double voltageV : voltageSamples) {
-        ++m_tickCounter;
-        m_allSamples.append(qMakePair(m_tickCounter, voltageV));
-        m_pendingFileSamples.append(qMakePair(m_tickCounter, voltageV));
+    quint64& moduleTickCounter = (moduleId == 1) ? m_tickCounter212 : m_tickCounter;
+    QVector<QPointF>& modulePlotPoints = (moduleId == 1) ? m_plotPoints212 : m_plotPoints;
 
-        if ((m_tickCounter % static_cast<quint64>(everyN)) == 0) {
-            m_plotPoints.append(QPointF(static_cast<qreal>(m_tickCounter), voltageV));
+    for (double voltageV : voltageSamples) {
+        ++moduleTickCounter;
+        m_allSamples.append(qMakePair(moduleTickCounter, voltageV));
+        m_pendingFileSamples.append(qMakePair(moduleTickCounter, voltageV));
+
+        if ((moduleTickCounter % static_cast<quint64>(everyN)) == 0) {
+            modulePlotPoints.append(QPointF(static_cast<qreal>(moduleTickCounter), voltageV));
         }
     }
 
@@ -722,41 +761,48 @@ void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples)
     }
 
     const int maxPlotPoints = static_cast<int>(qMax<quint64>(1, PLOT_WINDOW_TICKS / static_cast<quint64>(everyN) + 2));
-    if (m_plotPoints.size() > maxPlotPoints) {
-        m_plotPoints.remove(0, m_plotPoints.size() - maxPlotPoints);
+    if (modulePlotPoints.size() > maxPlotPoints) {
+        modulePlotPoints.remove(0, modulePlotPoints.size() - maxPlotPoints);
     }
 
     refresh_plot();
 }
 
-QVector<double> MainWindow::generate_simulated_samples()
+QVector<double> MainWindow::generate_simulated_samples(int moduleId)
 {
     QVector<double> samples;
     const double sampleRate = static_cast<double>(qMax(1, m_simulatedSampleRate));
     const double timerPeriodSec = 0.03;
-    m_simulatedSampleAccumulator += sampleRate * timerPeriodSec;
+    double& accumulator = (moduleId == 1) ? m_simulatedSampleAccumulator212 : m_simulatedSampleAccumulator;
+    quint64& signalTick = (moduleId == 1) ? m_simulatedSignalTick212 : m_simulatedSignalTick;
+    accumulator += sampleRate * timerPeriodSec;
 
-    int samplesToGenerate = static_cast<int>(m_simulatedSampleAccumulator);
-    m_simulatedSampleAccumulator -= samplesToGenerate;
+    int samplesToGenerate = static_cast<int>(accumulator);
+    accumulator -= samplesToGenerate;
 
     if (samplesToGenerate <= 0)
         return samples;
 
     samples.reserve(samplesToGenerate);
     const double dt = 1.0 / sampleRate;
-    const double freq1 = qMin(5.0, sampleRate / 20.0);
-    const double freq2 = qMin(13.0, sampleRate / 12.0);
+    const double freq1 = (moduleId == 1) ? qMin(7.0, sampleRate / 17.0) : qMin(5.0, sampleRate / 20.0);
+    const double freq2 = (moduleId == 1) ? qMin(11.0, sampleRate / 10.0) : qMin(13.0, sampleRate / 12.0);
+    const double amp1 = (moduleId == 1) ? 0.00095 : 0.0012;
+    const double amp2 = (moduleId == 1) ? 0.00060 : 0.00045;
+    const double amp3 = (moduleId == 1) ? 0.00022 : 0.00015;
+    const double phase2 = (moduleId == 1) ? 1.4 : 0.8;
+    const double slowFreq = (moduleId == 1) ? 0.55 : 0.35;
     constexpr double pi = 3.14159265358979323846;
 
     for (int i = 0; i < samplesToGenerate; ++i) {
-        const double t = (static_cast<double>(m_simulatedSignalTick) + static_cast<double>(i) + 1.0) * dt;
-        const double signal = 0.0012 * std::sin(2.0 * pi * freq1 * t)
-                            + 0.00045 * std::sin(2.0 * pi * freq2 * t + 0.8)
-                            + 0.00015 * std::sin(2.0 * pi * 0.35 * t);
+        const double t = (static_cast<double>(signalTick) + static_cast<double>(i) + 1.0) * dt;
+        const double signal = amp1 * std::sin(2.0 * pi * freq1 * t)
+                            + amp2 * std::sin(2.0 * pi * freq2 * t + phase2)
+                            + amp3 * std::sin(2.0 * pi * slowFreq * t);
         samples.append(signal);
     }
 
-    m_simulatedSignalTick += static_cast<quint64>(samplesToGenerate);
+    signalTick += static_cast<quint64>(samplesToGenerate);
     return samples;
 }
 

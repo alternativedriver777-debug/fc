@@ -106,6 +106,7 @@ private:
     QChartView* chartView;
     QChart* chart;
     QLineSeries* lineSeries;
+    QLineSeries* lineSeries212 = nullptr;
     QValueAxis* axisX;
     QValueAxis* axisY;
 
@@ -133,10 +134,16 @@ private:
     QTextStream* m_captureStream = nullptr;
     QString m_captureFilePath;
     bool m_simulationMode = false;
+    bool m_simulateTwoModules = false;   // false = только LTR114, true = LTR114 + LTR212
     double m_simulatedSampleAccumulator = 0.0;
+    double m_simulatedSampleAccumulator212 = 0.0;
     int m_simulatedSampleRate = 2000;
     quint64 m_simulatedSignalTick = 0;
+    quint64 m_simulatedSignalTick212 = 0;
     QTimer* m_simulationTimer = nullptr;
+
+    quint64 m_tickCounter212 = 0;
+    QVector<QPointF> m_plotPoints212;
 
     QMap<int, QWidget*> moduleWidgets;
 
@@ -147,8 +154,8 @@ private:
     void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
     void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
     void run_ltr212_module(const QString& crate_sn, int ltr212_slot);
-    void process_voltage_samples(const QVector<double>& voltageSamples);
-    QVector<double> generate_simulated_samples();
+    void process_voltage_samples(const QVector<double>& voltageSamples, int moduleId = 0);
+    QVector<double> generate_simulated_samples(int moduleId = 0);
 
     void setup_crate_sync();
     void stop_worker_threads();
