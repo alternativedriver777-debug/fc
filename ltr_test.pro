@@ -7,6 +7,7 @@ SOURCES += \
     ltr11.cpp \
     ltr114.cpp \
     ltr212.cpp \
+    ltr_workers.cpp \
     main.cpp \
     mainwindow.cpp
 
@@ -15,6 +16,7 @@ HEADERS += \
     ltr11.h \
     ltr114.h \
     ltr212.h \
+    ltr_workers.h \
     mainwindow.h \
     $$PWD/LTR/ltrapi.h \
     $$PWD/LTR/ltrapidefine.h \
