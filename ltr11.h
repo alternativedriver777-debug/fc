@@ -10,7 +10,6 @@ public:
     LTR11();
     ~LTR11() override;
 
-    // реализация интерфейса Module
     bool open(const QString& crateSn, int slot) override;
     void close() override;
     bool get_config() override;
@@ -19,7 +18,6 @@ public:
     bool stop() override;
     QVector<DWORD> receive_data(DWORD timeout, int* errorCode = nullptr) override;
 
-    // специфичнеские методы для настройки LTR11
     void set_start_mode(BYTE mode) { m_handle.StartADCMode = mode; }
     void set_input_mode(BYTE mode) { m_handle.InpMode = mode; }
     void set_ADC_rate(BYTE prescaler, BYTE divider);

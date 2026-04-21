@@ -11,11 +11,34 @@
 #include <QMainWindow>
 #include <QString>
 #include <QMap>
+
 #include "LTR/ltrapi.h"
 #include "LTR/ltr11api.h"
 #include "LTR/ltr114api.h"
+#include "LTR/ltr212api.h"
+
+#include "crate.h"
+#include "ltr11.h"
+#include "ltr114.h"
+#include "ltr212.h"
+
 #include "crate.h"
 #include <memory>
+
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
+
+QT_CHARTS_USE_NAMESPACE
+
+    namespace QtCharts {
+    class QValueAxis;
+    class QLineSeries;
+    class QChart;
+    class QChartView;
+}
+
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -24,6 +47,7 @@ QT_END_NAMESPACE
 class Crate;
 class LTR11;
 class LTR114;
+class LTR212;
 class QPushButton;
 class QSpinBox;
 class QCheckBox;
@@ -31,12 +55,12 @@ class QComboBox;
 class QFile;
 class QTextStream;
 
-QT_BEGIN_NAMESPACE
-class QValueAxis;
-class QLineSeries;
-class QChart;
-class QChartView;
-QT_END_NAMESPACE
+// QT_BEGIN_NAMESPACE
+// class QValueAxis;
+// class QLineSeries;
+// class QChart;
+// class QChartView;
+// QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
 {
@@ -61,12 +85,13 @@ private:
 
     const int CONNECTION_TIMEOUT_MS = 10000;
     const int POLL_INTERVAL_MS = 200;
-    const quint64 PLOT_WINDOW_TICKS = 5000; // ширина наблюдаемого окна по X (в тиках)
+    const quint64 PLOT_WINDOW_TICKS = 300; // ширина наблюдаемого окна по X (в тиках)
 
     Ui::MainWindow *ui;
     std::unique_ptr<Crate> m_crate;        // управление крейтом
     std::unique_ptr<LTR11> m_ltr11;        // управление модулем LTR11
     std::unique_ptr<LTR114> m_ltr114;      // управление модулем LTR114
+    std::unique_ptr<LTR212> m_ltr212;      // управление модулем LTR212
 
     QListWidget* modulesList;
     QTextEdit* infoText;
@@ -85,30 +110,52 @@ private:
     QTimer acquisitionTimer;
 
     QString m_crateSerial;
-    int m_ltr114Slot;
-    bool m_captureRunning;
-    quint64 m_tickCounter;
+    int m_ltr114Slot = -1;
+    int m_ltr212Slot = -1;
+
+    bool m_usingLtr212 = false;
+    bool m_usingLtr114 = false;
+
+    // === СИНХРОНИЗАЦИЯ ПО TMARK (выравнивание по START-меткам) ===
+    bool     m_needSynchronization = false;   // true, только если оба модуля
+    bool     m_syncInitialized     = false;
+    quint32  m_refStartMark        = 0;
+
+    // Вспомогательные функции
+    quint32 extractStartMark(DWORD tmarkWord) const;
+    QVector<DWORD> trim_by_start_mark(const QVector<DWORD>& raw,
+                                      const QVector<DWORD>& tmarks,
+                                      quint32 refStart);
+    void initializeSync(quint32 start114, quint32 start212);
+
+    bool m_captureRunning = false;
+    quint64 m_tickCounter = 0;
     QVector<QPointF> m_plotPoints;
     QVector<QPair<quint64, double>> m_allSamples;
     QVector<QPair<quint64, double>> m_pendingFileSamples;
-    QFile* m_captureFile;
-    QTextStream* m_captureStream;
+    QFile* m_captureFile = nullptr;
+    QTextStream* m_captureStream = nullptr;
     QString m_captureFilePath;
+    bool m_simulationMode = false;
+    double m_simulatedSampleAccumulator = 0.0;
 
-    // map slot -> widget (for quick status updates)
     QMap<int, QWidget*> moduleWidgets;
 
-    // initialization & helpers
-    void init_ui_replace();          // построение виджетов в окне (без .ui правок)
-    // void init_ltr();                 // основная логика LTR (заменяет QMessageBox на лог)
-    // static QString module_name(WORD mid);
-
-    // helpers to manage info log and module indicators
+    void init_ui_replace();
     void appendInfo(const QString &msg, bool isError = false);
     QWidget* createModuleItemWidget(int slot, const QString &name, bool ok);
     void setModuleStatus(int slot, bool ok);
     void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
     void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
+    void run_ltr212_module(const QString& crate_sn, int ltr212_slot);
+    void process_voltage_samples(const QVector<double>& voltageSamples);
+    QVector<double> generate_simulated_samples();
+
+    void setup_crate_sync();
+    bool open_ltr212_for_capture();
+    void close_ltr212_capture();
+    void poll_ltr212_data();
+    void poll_capture_data();
 
 private slots:
     void on_start_capture_clicked();
