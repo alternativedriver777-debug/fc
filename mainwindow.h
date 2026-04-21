@@ -3,6 +3,7 @@
 
 #include <QListWidget>
 #include <QTextEdit>
+#include <QTimer>
 #include <QThread>
 #include <QVector>
 #include <QPair>
@@ -122,8 +123,6 @@ private:
     QThread* m_ltr212Thread = nullptr;
     Ltr114Worker* m_ltr114Worker = nullptr;
     Ltr212Worker* m_ltr212Worker = nullptr;
-    QThread* m_simulationThread = nullptr;
-    SimulationWorker* m_simulationWorker = nullptr;
 
     bool m_captureRunning = false;
     quint64 m_tickCounter = 0;
@@ -137,6 +136,7 @@ private:
     double m_simulatedSampleAccumulator = 0.0;
     int m_simulatedSampleRate = 2000;
     quint64 m_simulatedSignalTick = 0;
+    QTimer* m_simulationTimer = nullptr;
 
     QMap<int, QWidget*> moduleWidgets;
 
