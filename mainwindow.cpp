@@ -69,7 +69,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_ltr114Slot(-1)
     , m_ltr212Slot(-1)
     , m_captureRunning(false)
-    , m_tickCounter(0)
     , m_captureFile(nullptr)
     , m_captureStream(nullptr)
     , m_simulationMode(false)
@@ -77,6 +76,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_simulatedSampleAccumulator212(0.0)
 {
     ui->setupUi(this);
+    qRegisterMetaType<QVector<TimedSample>>("QVector<TimedSample>");
 
     init_ui_replace();
     setup_plot();
@@ -520,12 +520,15 @@ bool MainWindow::open_capture_file(int moduleId)
     }
 
     targetStream = new QTextStream(targetFile);
-    (*targetStream) << sampleRateSpin->value() << "    " << current_unit_name() << "    " << moduleName << "\n";
+    (*targetStream) << "# rate_hz=" << sampleRateSpin->value()
+                    << " unit=" << current_unit_name()
+                    << " module=" << moduleName
+                    << " columns=global_tick second_mark sample_in_second value\n";
     targetStream->flush();
     return true;
 }
 
-bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& samples, int moduleId)
+bool MainWindow::append_samples_to_file(const QVector<TimedSample>& samples, int moduleId)
 {
     if (samples.isEmpty())
         return true;
@@ -539,8 +542,11 @@ bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& s
     const double factor = current_unit_factor();
     const int precision = current_unit_name() == "V" ? 9 : 3;
 
-    for (const auto& sample : samples) {
-        (*targetStream) << sample.first << "    " << QString::number(sample.second * factor, 'f', precision) << "\n";
+    for (const TimedSample& sample : samples) {
+        (*targetStream) << sample.globalTick << "    "
+                        << sample.secondMark << "    "
+                        << sample.sampleInSecond << "    "
+                        << QString::number(sample.value * factor, 'f', precision) << "\n";
     }
 
     targetStream->flush();
@@ -599,8 +605,6 @@ void MainWindow::on_start_capture_clicked()
     m_plotPoints212.clear();
     m_pendingFileSamples114.clear();
     m_pendingFileSamples212.clear();
-    m_tickCounter = 0;
-    m_tickCounter212 = 0;
     refresh_plot();
 
     if (m_simulationMode) {
@@ -644,9 +648,6 @@ void MainWindow::on_start_capture_clicked()
         return;
     }
 
-    // === НАСТРАИВАЕМ СИНХРОМЕТКИ ===
-    setup_crate_sync();
-
     m_usingLtr114 = false;
     m_usingLtr212 = false;
 
@@ -671,6 +672,10 @@ void MainWindow::on_start_capture_clicked()
         return;
     }
 
+    if (!m_simulationMode && m_usingLtr114 && m_usingLtr212) {
+        setup_crate_sync();
+    }
+
     if (saveToFileCheck->isChecked()) {
         if (m_usingLtr114 && !open_capture_file(0)) {
             close_ltr114_capture();
@@ -688,10 +693,14 @@ void MainWindow::on_start_capture_clicked()
     m_syncState.needSynchronization = (m_usingLtr114 && m_usingLtr212);
     m_syncState.refInitialized = !m_syncState.needSynchronization;
     m_syncState.refStartMark = 0;
+    m_syncState.refSecondMark = 0;
     m_syncState.seen114 = false;
     m_syncState.seen212 = false;
     m_syncState.start114 = 0;
     m_syncState.start212 = 0;
+    m_syncState.second114 = 0;
+    m_syncState.second212 = 0;
+    m_syncState.timeBaseTicks = 1000000ULL;
 
     if (m_syncState.needSynchronization) {
         appendInfo("Запущены оба модуля → включаем синхронизацию по tmark");
@@ -711,7 +720,7 @@ void MainWindow::on_start_capture_clicked()
         m_ltr114Worker->moveToThread(m_ltr114Thread);
 
         connect(m_ltr114Thread, &QThread::started, m_ltr114Worker, &Ltr114Worker::run);
-        connect(m_ltr114Worker, &Ltr114Worker::newVoltageSamples, this, [this](const QVector<double>& samples) {
+        connect(m_ltr114Worker, &Ltr114Worker::newVoltageSamples, this, [this](const QVector<TimedSample>& samples) {
             process_voltage_samples(samples, 0);
         }, Qt::QueuedConnection);
         connect(m_ltr114Worker, &Ltr114Worker::acquisitionError, this, [this](const QString& error) {
@@ -730,7 +739,7 @@ void MainWindow::on_start_capture_clicked()
         m_ltr212Worker->moveToThread(m_ltr212Thread);
 
         connect(m_ltr212Thread, &QThread::started, m_ltr212Worker, &Ltr212Worker::run);
-        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, [this](const QVector<double>& samples) {
+        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, [this](const QVector<TimedSample>& samples) {
             process_voltage_samples(samples, 1);
         }, Qt::QueuedConnection);
         connect(m_ltr212Worker, &Ltr212Worker::acquisitionError, this, [this](const QString& error) {
@@ -784,24 +793,22 @@ void MainWindow::on_stop_capture_clicked()
     appendInfo("Сбор остановлен пользователем.");
 }
 
-void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples, int moduleId)
+void MainWindow::process_voltage_samples(const QVector<TimedSample>& voltageSamples, int moduleId)
 {
     if (voltageSamples.isEmpty())
         return;
 
     const int everyN = qMax(1, plotEverySpin->value());
-    quint64& moduleTickCounter = (moduleId == 1) ? m_tickCounter212 : m_tickCounter;
     QVector<QPointF>& modulePlotPoints = (moduleId == 1) ? m_plotPoints212 : m_plotPoints;
 
-    QVector<QPair<quint64, double>>& modulePendingFileSamples = (moduleId == 1) ? m_pendingFileSamples212 : m_pendingFileSamples114;
+    QVector<TimedSample>& modulePendingFileSamples = (moduleId == 1) ? m_pendingFileSamples212 : m_pendingFileSamples114;
 
-    for (double voltageV : voltageSamples) {
-        ++moduleTickCounter;
-        m_allSamples.append(qMakePair(moduleTickCounter, voltageV));
-        modulePendingFileSamples.append(qMakePair(moduleTickCounter, voltageV));
+    for (const TimedSample& sample : voltageSamples) {
+        m_allSamples.append(sample);
+        modulePendingFileSamples.append(sample);
 
-        if ((moduleTickCounter % static_cast<quint64>(everyN)) == 0) {
-            modulePlotPoints.append(QPointF(static_cast<qreal>(moduleTickCounter), voltageV));
+        if ((sample.globalTick % static_cast<quint64>(everyN)) == 0) {
+            modulePlotPoints.append(QPointF(static_cast<qreal>(sample.globalTick), sample.value));
         }
     }
 
@@ -823,9 +830,9 @@ void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples, 
     refresh_plot();
 }
 
-QVector<double> MainWindow::generate_simulated_samples(int moduleId)
+QVector<TimedSample> MainWindow::generate_simulated_samples(int moduleId)
 {
-    QVector<double> samples;
+    QVector<TimedSample> samples;
     const double sampleRate = static_cast<double>(qMax(1, m_simulatedSampleRate));
     const double timerPeriodSec = 0.03;
     double& accumulator = (moduleId == 1) ? m_simulatedSampleAccumulator212 : m_simulatedSampleAccumulator;
@@ -854,7 +861,12 @@ QVector<double> MainWindow::generate_simulated_samples(int moduleId)
         const double signal = amp1 * std::sin(2.0 * pi * freq1 * t)
                             + amp2 * std::sin(2.0 * pi * freq2 * t + phase2)
                             + amp3 * std::sin(2.0 * pi * slowFreq * t);
-        samples.append(signal);
+        TimedSample sample;
+        sample.globalTick = (signalTick + static_cast<quint64>(i) + 1ULL) * 1000000ULL / static_cast<quint64>(sampleRate);
+        sample.secondMark = static_cast<quint32>((signalTick + static_cast<quint64>(i)) / static_cast<quint64>(sampleRate));
+        sample.sampleInSecond = static_cast<quint32>((signalTick + static_cast<quint64>(i)) % static_cast<quint64>(sampleRate));
+        sample.value = signal;
+        samples.append(sample);
     }
 
     signalTick += static_cast<quint64>(samplesToGenerate);
