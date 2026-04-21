@@ -80,7 +80,7 @@ private:
     void close_ltr114_capture();
     void refresh_plot();
     bool open_capture_file(int moduleId = 0);
-    bool append_samples_to_file(const QVector<QPair<quint64, double>>& samples, int moduleId = 0);
+    bool append_samples_to_file(const QVector<TimedSample>& samples, int moduleId = 0);
     void close_capture_file(int moduleId = 0);
     void close_capture_files();
     double current_unit_factor() const;
@@ -127,11 +127,10 @@ private:
     Ltr212Worker* m_ltr212Worker = nullptr;
 
     bool m_captureRunning = false;
-    quint64 m_tickCounter = 0;
     QVector<QPointF> m_plotPoints;
-    QVector<QPair<quint64, double>> m_allSamples;
-    QVector<QPair<quint64, double>> m_pendingFileSamples114;
-    QVector<QPair<quint64, double>> m_pendingFileSamples212;
+    QVector<TimedSample> m_allSamples;
+    QVector<TimedSample> m_pendingFileSamples114;
+    QVector<TimedSample> m_pendingFileSamples212;
     QFile* m_captureFile = nullptr;
     QTextStream* m_captureStream = nullptr;
     QString m_captureFilePath;
@@ -147,7 +146,6 @@ private:
     quint64 m_simulatedSignalTick212 = 0;
     QTimer* m_simulationTimer = nullptr;
 
-    quint64 m_tickCounter212 = 0;
     QVector<QPointF> m_plotPoints212;
 
     QMap<int, QWidget*> moduleWidgets;
@@ -159,8 +157,8 @@ private:
     void run_ltr11_module(const QString& crate_sn, int ltr11_slot);
     void run_ltr114_module(const QString& crate_sn, int ltr114_slot);
     void run_ltr212_module(const QString& crate_sn, int ltr212_slot);
-    void process_voltage_samples(const QVector<double>& voltageSamples, int moduleId = 0);
-    QVector<double> generate_simulated_samples(int moduleId = 0);
+    void process_voltage_samples(const QVector<TimedSample>& voltageSamples, int moduleId = 0);
+    QVector<TimedSample> generate_simulated_samples(int moduleId = 0);
 
     void setup_crate_sync();
     void stop_worker_threads();
