@@ -3,7 +3,7 @@
 
 #include <QListWidget>
 #include <QTextEdit>
-#include <QTimer>
+#include <QThread>
 #include <QVector>
 #include <QPair>
 #include <QPointF>
@@ -21,6 +21,7 @@
 #include "ltr11.h"
 #include "ltr114.h"
 #include "ltr212.h"
+#include "ltr_workers.h"
 
 #include "crate.h"
 #include <memory>
@@ -84,7 +85,6 @@ private:
     QString current_unit_name() const;
 
     const int CONNECTION_TIMEOUT_MS = 10000;
-    const int POLL_INTERVAL_MS = 200;
     const quint64 PLOT_WINDOW_TICKS = 300; // ширина наблюдаемого окна по X (в тиках)
 
     Ui::MainWindow *ui;
@@ -107,7 +107,6 @@ private:
     QLineSeries* lineSeries;
     QValueAxis* axisX;
     QValueAxis* axisY;
-    QTimer acquisitionTimer;
 
     QString m_crateSerial;
     int m_ltr114Slot = -1;
@@ -116,17 +115,15 @@ private:
     bool m_usingLtr212 = false;
     bool m_usingLtr114 = false;
 
-    // === СИНХРОНИЗАЦИЯ ПО TMARK (выравнивание по START-меткам) ===
-    bool     m_needSynchronization = false;   // true, только если оба модуля
-    bool     m_syncInitialized     = false;
-    quint32  m_refStartMark        = 0;
+    // Общая синхронизация по tmark между worker-потоками.
+    SyncState m_syncState;
 
-    // Вспомогательные функции
-    quint32 extractStartMark(DWORD tmarkWord) const;
-    QVector<DWORD> trim_by_start_mark(const QVector<DWORD>& raw,
-                                      const QVector<DWORD>& tmarks,
-                                      quint32 refStart);
-    void initializeSync(quint32 start114, quint32 start212);
+    QThread* m_ltr114Thread = nullptr;
+    QThread* m_ltr212Thread = nullptr;
+    Ltr114Worker* m_ltr114Worker = nullptr;
+    Ltr212Worker* m_ltr212Worker = nullptr;
+    QThread* m_simulationThread = nullptr;
+    SimulationWorker* m_simulationWorker = nullptr;
 
     bool m_captureRunning = false;
     quint64 m_tickCounter = 0;
@@ -138,6 +135,8 @@ private:
     QString m_captureFilePath;
     bool m_simulationMode = false;
     double m_simulatedSampleAccumulator = 0.0;
+    int m_simulatedSampleRate = 2000;
+    quint64 m_simulatedSignalTick = 0;
 
     QMap<int, QWidget*> moduleWidgets;
 
@@ -152,15 +151,13 @@ private:
     QVector<double> generate_simulated_samples();
 
     void setup_crate_sync();
+    void stop_worker_threads();
     bool open_ltr212_for_capture();
     void close_ltr212_capture();
-    void poll_ltr212_data();
-    void poll_capture_data();
 
 private slots:
     void on_start_capture_clicked();
     void on_stop_capture_clicked();
-    void poll_ltr114_data();
 };
 
 #endif // MAINWINDOW_H
