@@ -139,7 +139,7 @@ private:
     QTextStream* m_captureStream212 = nullptr;
     QString m_captureFilePath212;
     bool m_simulationMode = false;
-    bool m_simulateTwoModules = false;   // false = только LTR114, true = LTR114 + LTR212
+    bool m_simulateTwoModules = true;   // false = только LTR114, true = LTR114 + LTR212
     double m_simulatedSampleAccumulator = 0.0;
     double m_simulatedSampleAccumulator212 = 0.0;
     int m_simulatedSampleRate = 2000;

@@ -376,46 +376,55 @@ bool MainWindow::open_ltr212_for_capture()
 
     m_ltr212 = std::make_unique<LTR212>();
 
-    if (!m_ltr212->open(m_crateSerial, m_ltr212Slot)) {
+    if (!m_ltr212->open(m_crateSerial, m_ltr212Slot, "ltr212.bio")) {  // ← используй полную версию open
         appendInfo("Не удалось открыть LTR212", true);
         m_ltr212.reset();
         return false;
     }
 
-    // === КОНФИГУРАЦИЯ (подберите под свои нужды) ===
-    m_ltr212->set_acq_mode(1);           // 1 = высокоточный 4-канальный режим (см. мануал)
-    m_ltr212->set_use_clb(0);
-    m_ltr212->set_use_fabric_clb(1);
-    m_ltr212->set_ref_voltage(1);        // 1 = опорное 5 В
-    m_ltr212->set_ac_mode(0);            // 0 = постоянное напряжение (DC)
+    // ПРАВИЛЬНАЯ КОНФИГУРАЦИЯ
+    m_ltr212->set_size();                    // вызывается в open(), но на всякий случай (!!!!!)
+    m_ltr212->set_acq_mode(LTR212_FOUR_CHANNELS_WITH_HIGH_RESOLUTION); // 1 — норм
+    m_ltr212->set_use_clb(0);                // не используем пользовательскую калибровку
+    m_ltr212->set_use_fabric_clb(1);         // заводские коэффициенты
+    m_ltr212->set_ref_voltage(LTR212_REF_5V); // 1 = 5 В (для большинства датчиков)
+    m_ltr212->set_ac_mode(0);                // 0 = DC (постоянное напряжение)
 
-    // Логические каналы — САМЫЙ ВАЖНЫЙ МОМЕНТ!
-    // Посмотрите в ltr212api.h функцию LTR212_CreateLChannel (или как там называется)
-    const int ch_count = 1;              // ← измените на нужное количество (1–8)
-    INT ch_table[8] = {};                // обнуляем
+    // === ЛОГИЧЕСКИЕ КАНАЛЫ — САМЫЙ ВАЖНЫЙ МОМЕНТ ===
+    const int ch_count = 1;                  // сколько каналов нужно (1–8)
+    INT ch_table[8] = {};
 
-    // Пример для 1 канала (замените на реальную функцию из вашего API)
-    // ch_table[0] = LTR212_CreateLChannel(режим, канал, диапазон);
-    ch_table[0] = 0;                     // минимальный вариант — просто номер канала
+    //  физический канал 1, диапазон ±80 мВ
+    ch_table[0] = LTR212_CreateLChannel(1, LTR212_SCALE_B_80);
+
+    // Если нужно несколько каналов
+    // ch_table[1] = LTR212_CreateLChannel(2, LTR212_SCALE_B_40);
+    // ch_table[2] = LTR212_CreateLChannel(3, LTR212_SCALE_B_20); и т.д.
 
     m_ltr212->set_logical_channels(ch_count, ch_table);
 
-    if (!m_ltr212->apply_config()) {
+    // Применяем настройки
+    if (!m_ltr212->apply_config()) {   // внутри: LTR212_SetADC()
         appendInfo("Не удалось применить конфигурацию LTR212", true);
         m_ltr212.reset();
         return false;
     }
 
-    // Калибровка (если есть функция в API)
-    // if (LTR212_Calibrate(m_ltr212->handle()) != LTR_OK) { ... }
+    //  калибровка (рекомендуется
+    if (LTR212_Calibrate(m_ltr212->handle(), nullptr, LTR212_CALIBR_MODE_INT_FULL, 1) != LTR_OK) {
+        appendInfo("Предупреждение: LTR212_Calibrate не прошла (можно продолжить)", false);
+    }
 
+    // Запуск сбора
     if (!m_ltr212->start()) {
         appendInfo("Не удалось запустить сбор LTR212", true);
         m_ltr212.reset();
         return false;
     }
 
-    appendInfo(QString("LTR212 запущен (каналов: %1)").arg(ch_count));
+    appendInfo(QString("LTR212 успешно запущен: %1 канал(ов), AcqMode=%2, REF=5V")
+                   .arg(ch_count)
+                   .arg(m_ltr212->handle()->AcqMode));
     return true;
 }
 
