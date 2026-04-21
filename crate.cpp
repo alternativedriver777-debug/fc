@@ -127,3 +127,34 @@ std::unique_ptr<Module> Crate::create_module(int slot) const
 
     return nullptr;
 }
+
+bool Crate::setup_sync_marks()
+{
+    if (!m_hcrate) {
+        qDebug() << "Crate::setup_sync_marks: нет соединения с крейтом";
+        return false;
+    }
+
+    // Генерируем одну метку START сразу
+    if (LTR_MakeStartMark(m_hcrate, LTR_MARK_INTERNAL) != LTR_OK) {
+        qDebug() << "LTR_MakeStartMark failed";
+        return false;
+    }
+
+    // Запускаем генерацию SECOND-меток каждую секунду
+    if (LTR_StartSecondMark(m_hcrate, LTR_MARK_INTERNAL) != LTR_OK) {
+        qDebug() << "LTR_StartSecondMark failed";
+        return false;
+    }
+
+    return true;
+}
+
+void Crate::stop_sync_marks()
+{
+    if (m_hcrate) {
+        LTR_StopSecondMark(m_hcrate);
+        // Опционально выключаем START (не обязательно)
+        LTR_MakeStartMark(m_hcrate, LTR_MARK_OFF);
+    }
+}

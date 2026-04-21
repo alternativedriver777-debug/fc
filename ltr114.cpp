@@ -127,3 +127,33 @@ void LTR114::set_interval(DWORD interval)
 {
     m_handle.Interval = interval;
 }
+
+QPair<QVector<DWORD>, QVector<DWORD>> LTR114::receive_data_with_marks(DWORD timeout, int* error_code)
+{
+    QVector<DWORD> data;
+    QVector<DWORD> tmark;
+
+    if (!m_is_open) {
+        if (error_code) *error_code = -1;
+        return {data, tmark};
+    }
+
+    INT requested_size = static_cast<INT>(10 * m_handle.FrameLength);
+    if (requested_size <= 0) requested_size = 10;
+
+    data.resize(requested_size);
+    tmark.resize(requested_size);
+
+    INT recv_result = LTR114_Recv(&m_handle, data.data(), tmark.data(), requested_size, timeout);
+
+    if (recv_result < 0) {
+        if (error_code) *error_code = recv_result;
+        return {{}, {}};
+    }
+
+    data.resize(recv_result);
+    tmark.resize(recv_result);
+
+    if (error_code) *error_code = 0;
+    return {data, tmark};
+}

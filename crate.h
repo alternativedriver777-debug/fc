@@ -5,14 +5,13 @@
 #include <QList>
 #include <QPair>
 #include <memory>
-#include "LTR/ltrapi.h"   // для TLTR, WORD и констант
+#include "LTR/ltrapi.h"
 
 class Module;
 
 class Crate
 {
 public:
-    // стат метод – получить список серийных номеров доступных крейтов
     static QList<QString> enumerate_crates();
 
     explicit Crate(const QString& serial_number);
@@ -28,11 +27,12 @@ public:
 
     QList<QPair<int, WORD>> get_modules() const;
 
-    // создать объект модуля для указанного слота (по идентификатору)
-    // ретурн nullptr, если тип модуля неизвестен или не удалось открыть
     std::unique_ptr<Module> create_module(int slot) const;
 
     WORD get_slot_count() const;
+
+    bool setup_sync_marks();
+    void stop_sync_marks();
 
 private:
     QString m_serial_number;

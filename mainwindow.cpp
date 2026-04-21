@@ -19,6 +19,7 @@
 #include <QtCharts/QValueAxis>
 #include <numeric>
 #include <algorithm>
+#include <cmath>
 
 #include "ltr11.h"
 #include "ltr114.h"
@@ -29,7 +30,7 @@ QString MainWindow::module_name(WORD mid)
     {
     case LTR_MID_EMPTY: return "EMPTY";
     case LTR_MID_IDENTIFYING: return "IDENTIFYING";
-    case LTR_MID_INVALID: return "INVALID";
+    // case LTR_MID_INVALID: return "INVALID";
     case LTR_MID_LTR01: return "LTR01";
     case LTR_MID_LTR11: return "LTR11";
     case LTR_MID_LTR22: return "LTR22";
@@ -65,10 +66,13 @@ MainWindow::MainWindow(QWidget *parent)
     , axisX(nullptr)
     , axisY(nullptr)
     , m_ltr114Slot(-1)
+    , m_ltr212Slot(-1)
     , m_captureRunning(false)
     , m_tickCounter(0)
     , m_captureFile(nullptr)
     , m_captureStream(nullptr)
+    , m_simulationMode(false)
+    , m_simulatedSampleAccumulator(0.0)
 {
     ui->setupUi(this);
 
@@ -76,14 +80,15 @@ MainWindow::MainWindow(QWidget *parent)
     setup_plot();
     appendInfo("Приложение запущено.");
 
-    connect(&acquisitionTimer, &QTimer::timeout, this, &MainWindow::poll_ltr114_data);
     init_ltr();
 }
 
 MainWindow::~MainWindow()
 {
+    stop_worker_threads();
     close_capture_file();
     close_ltr114_capture();
+    close_ltr212_capture();
     delete ui;
 }
 
@@ -174,7 +179,7 @@ void MainWindow::setup_plot()
     chart = new QChart();
     chart->addSeries(lineSeries);
     chart->legend()->hide();
-    chart->setTitle("LTR114: Тики / Напряжение");
+    chart->setTitle("LTR: Тики / Напряжение");
 
     axisX = new QValueAxis();
     axisX->setTitleText("Тики");
@@ -265,6 +270,13 @@ void MainWindow::run_ltr114_module(const QString& crate_sn, int ltr114_slot)
 
 bool MainWindow::open_ltr114_for_capture()
 {
+    if (m_simulationMode) {
+        m_simulatedSampleAccumulator = 0.0;
+        m_simulatedSignalTick = 0;
+        appendInfo(QString("Сбор запущен в режиме симуляции. Частота=%1 Гц").arg(sampleRateSpin->value()));
+        return true;
+    }
+
     if (m_crateSerial.isEmpty() || m_ltr114Slot < 0) {
         appendInfo("Не найден LTR114: невозможно запустить сбор.", true);
         return false;
@@ -286,10 +298,14 @@ bool MainWindow::open_ltr114_for_capture()
     }
 
     TLTR114_LCHANNEL lch_tbl[1];
+
+    // указываем номер канала, режим и диапазон измерений
     lch_tbl[0] = LTR114_CreateLChannel(LTR114_MEASMODE_U, 0, LTR114_URANGE_04);
 
     const int requestedSampleRate = sampleRateSpin->value();
     const DWORD divider = static_cast<DWORD>(qBound(2, 8000 / qMax(1, requestedSampleRate), 8000));
+    // был тип string
+
     m_ltr114->set_freq_divider(divider);
     m_ltr114->set_logical_channels(1, lch_tbl);
     m_ltr114->set_sync_mode(LTR114_SYNCMODE_INTERNAL);
@@ -313,7 +329,7 @@ bool MainWindow::open_ltr114_for_capture()
         return false;
     }
 
-    double sampleRateHz = static_cast<double>(LTR114_FREQ(m_ltr114->handle())) * 1000.0;
+    double sampleRateHz = static_cast<double>(LTR114_FREQ(*m_ltr114->handle())) * 1000.0;
     appendInfo(QString("Сбор запущен. Частота=%1 Гц (FreqDivider=%2, фактическая=%3 Гц)")
                    .arg(requestedSampleRate)
                    .arg(divider)
@@ -324,12 +340,91 @@ bool MainWindow::open_ltr114_for_capture()
 
 void MainWindow::close_ltr114_capture()
 {
+    if (m_simulationMode)
+        return;
+
     if (!m_ltr114)
         return;
 
     m_ltr114->stop();
     m_ltr114->close();
     m_ltr114.reset();
+}
+
+
+bool MainWindow::open_ltr212_for_capture()
+{
+    if (m_simulationMode) {
+        appendInfo("Симуляция LTR212 не поддерживается пока");
+        return false;
+    }
+
+    if (m_crateSerial.isEmpty() || m_ltr212Slot < 0) {
+        appendInfo("LTR212 не найден в крейте", true);
+        return false;
+    }
+
+    m_ltr212 = std::make_unique<LTR212>();
+
+    if (!m_ltr212->open(m_crateSerial, m_ltr212Slot)) {
+        appendInfo("Не удалось открыть LTR212", true);
+        m_ltr212.reset();
+        return false;
+    }
+
+    // === КОНФИГУРАЦИЯ (подберите под свои нужды) ===
+    m_ltr212->set_acq_mode(1);           // 1 = высокоточный 4-канальный режим (см. мануал)
+    m_ltr212->set_use_clb(0);
+    m_ltr212->set_use_fabric_clb(1);
+    m_ltr212->set_ref_voltage(1);        // 1 = опорное 5 В
+    m_ltr212->set_ac_mode(0);            // 0 = постоянное напряжение (DC)
+
+    // Логические каналы — САМЫЙ ВАЖНЫЙ МОМЕНТ!
+    // Посмотрите в ltr212api.h функцию LTR212_CreateLChannel (или как там называется)
+    const int ch_count = 1;              // ← измените на нужное количество (1–8)
+    INT ch_table[8] = {};                // обнуляем
+
+    // Пример для 1 канала (замените на реальную функцию из вашего API)
+    // ch_table[0] = LTR212_CreateLChannel(режим, канал, диапазон);
+    ch_table[0] = 0;                     // минимальный вариант — просто номер канала
+
+    m_ltr212->set_logical_channels(ch_count, ch_table);
+
+    if (!m_ltr212->apply_config()) {
+        appendInfo("Не удалось применить конфигурацию LTR212", true);
+        m_ltr212.reset();
+        return false;
+    }
+
+    // Калибровка (если есть функция в API)
+    // if (LTR212_Calibrate(m_ltr212->handle()) != LTR_OK) { ... }
+
+    if (!m_ltr212->start()) {
+        appendInfo("Не удалось запустить сбор LTR212", true);
+        m_ltr212.reset();
+        return false;
+    }
+
+    appendInfo(QString("LTR212 запущен (каналов: %1)").arg(ch_count));
+    return true;
+}
+
+void MainWindow::close_ltr212_capture()
+{
+    if (!m_ltr212)
+        return;
+
+    m_ltr212->stop();
+    m_ltr212->close();
+    m_ltr212.reset();
+}
+
+void MainWindow::run_ltr212_module(const QString& crate_sn, int ltr212_slot)
+{
+    Q_UNUSED(crate_sn)
+    m_ltr212Slot = ltr212_slot;
+    // m_crateSerial уже установлен LTR114 или можно установить отдельно
+    appendInfo(QString("LTR212 найден в слоте %1. Готов к работе.").arg(ltr212_slot));
 }
 
 void MainWindow::refresh_plot()
@@ -373,7 +468,7 @@ bool MainWindow::open_capture_file()
     if (m_captureFile)
         return true;
 
-    m_captureFilePath = QString("ltr114_capture_%1.txt")
+    m_captureFilePath = QString("ltr_capture_%1.txt")
                             .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
 
     m_captureFile = new QFile(m_captureFilePath);
@@ -402,7 +497,7 @@ bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& s
     const int precision = current_unit_name() == "V" ? 9 : 3;
 
     for (const auto& sample : samples) {
-        (*m_captureStream) << sample.first << ";" << QString::number(sample.second * factor, 'f', precision) << "\n";
+        (*m_captureStream) << sample.first << "    " << QString::number(sample.second * factor, 'f', precision) << "\n";
     }
 
     m_captureStream->flush();
@@ -428,10 +523,23 @@ void MainWindow::close_capture_file()
     }
 }
 
+void MainWindow::setup_crate_sync()
+{
+    if (!m_crate || !m_crate->is_open()) {
+        appendInfo("Крейт не открыт — синхрометки не настроены", true);
+        return;
+    }
+
+    if (m_crate->setup_sync_marks()) {
+        appendInfo("Синхрометки настроены (START + SECOND 1 Гц)");
+    } else {
+        appendInfo("Ошибка настройки синхрометок на крейте", true);
+    }
+}
+
 void MainWindow::on_start_capture_clicked()
 {
-    if (m_captureRunning)
-        return;
+    if (m_captureRunning) return;
 
     m_allSamples.clear();
     m_plotPoints.clear();
@@ -442,9 +550,74 @@ void MainWindow::on_start_capture_clicked()
     if (saveToFileCheck->isChecked() && !open_capture_file())
         return;
 
-    if (!open_ltr114_for_capture()) {
+    if (m_simulationMode) {
+        m_captureRunning = true;
+        m_simulatedSampleRate = qMax(1, sampleRateSpin->value());
+        m_simulatedSampleAccumulator = 0.0;
+        m_simulatedSignalTick = 0;
+
+        startButton->setEnabled(false);
+        stopButton->setEnabled(true);
+        sampleRateSpin->setEnabled(false);
+        unitCombo->setEnabled(false);
+
+        m_simulationThread = new QThread(this);
+        m_simulationWorker = new SimulationWorker([this]() {
+            return generate_simulated_samples();
+        });
+        m_simulationWorker->moveToThread(m_simulationThread);
+
+        connect(m_simulationThread, &QThread::started, m_simulationWorker, &SimulationWorker::run);
+        connect(m_simulationWorker, &SimulationWorker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_simulationWorker, &SimulationWorker::finished, m_simulationThread, &QThread::quit);
+        connect(m_simulationThread, &QThread::finished, m_simulationWorker, &QObject::deleteLater);
+
+        m_usingLtr114 = false;
+        m_usingLtr212 = false;
+        appendInfo("Симуляция запущена в выделенном потоке.");
+        m_simulationThread->start();
+        return;
+    }
+
+    // === НАСТРАИВАЕМ СИНХРОМЕТКИ ===
+    setup_crate_sync();
+
+    m_usingLtr114 = false;
+    m_usingLtr212 = false;
+
+    bool success = false;
+
+    if (m_ltr114Slot != -1) {
+        if (open_ltr114_for_capture()) {
+            m_usingLtr114 = true;
+            success = true;
+        }
+    }
+    if (m_ltr212Slot != -1) {
+        if (open_ltr212_for_capture()) {
+            m_usingLtr212 = true;
+            success = true;
+        }
+    }
+
+    if (!success) {
+        appendInfo("Ни LTR114, ни LTR212 не удалось запустить!", true);
         close_capture_file();
         return;
+    }
+
+    m_syncState.needSynchronization = (m_usingLtr114 && m_usingLtr212);
+    m_syncState.refInitialized = !m_syncState.needSynchronization;
+    m_syncState.refStartMark = 0;
+    m_syncState.seen114 = false;
+    m_syncState.seen212 = false;
+    m_syncState.start114 = 0;
+    m_syncState.start212 = 0;
+
+    if (m_syncState.needSynchronization) {
+        appendInfo("Запущены оба модуля → включаем синхронизацию по tmark");
+    } else {
+        appendInfo("Работаем с одним модулем — синхронизация не требуется");
     }
 
     m_captureRunning = true;
@@ -453,18 +626,55 @@ void MainWindow::on_start_capture_clicked()
     sampleRateSpin->setEnabled(false);
     unitCombo->setEnabled(false);
 
-    acquisitionTimer.start(30);
+    if (m_usingLtr114 && m_ltr114) {
+        m_ltr114Thread = new QThread(this);
+        m_ltr114Worker = new Ltr114Worker(m_ltr114.get(), &m_syncState);
+        m_ltr114Worker->moveToThread(m_ltr114Thread);
+
+        connect(m_ltr114Thread, &QThread::started, m_ltr114Worker, &Ltr114Worker::run);
+        connect(m_ltr114Worker, &Ltr114Worker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_ltr114Worker, &Ltr114Worker::acquisitionError, this, [this](const QString& error) {
+            appendInfo(error, true);
+            QMetaObject::invokeMethod(this, "on_stop_capture_clicked", Qt::QueuedConnection);
+        }, Qt::QueuedConnection);
+        connect(m_ltr114Worker, &Ltr114Worker::finished, m_ltr114Thread, &QThread::quit);
+        connect(m_ltr114Thread, &QThread::finished, m_ltr114Worker, &QObject::deleteLater);
+
+        m_ltr114Thread->start();
+    }
+
+    if (m_usingLtr212 && m_ltr212) {
+        m_ltr212Thread = new QThread(this);
+        m_ltr212Worker = new Ltr212Worker(m_ltr212.get(), &m_syncState);
+        m_ltr212Worker->moveToThread(m_ltr212Thread);
+
+        connect(m_ltr212Thread, &QThread::started, m_ltr212Worker, &Ltr212Worker::run);
+        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
+        connect(m_ltr212Worker, &Ltr212Worker::acquisitionError, this, [this](const QString& error) {
+            appendInfo(error, true);
+            QMetaObject::invokeMethod(this, "on_stop_capture_clicked", Qt::QueuedConnection);
+        }, Qt::QueuedConnection);
+        connect(m_ltr212Worker, &Ltr212Worker::finished, m_ltr212Thread, &QThread::quit);
+        connect(m_ltr212Thread, &QThread::finished, m_ltr212Worker, &QObject::deleteLater);
+
+        m_ltr212Thread->start();
+    }
 }
 
 void MainWindow::on_stop_capture_clicked()
 {
-    if (!m_captureRunning)
-        return;
+    if (!m_captureRunning) return;
 
-    acquisitionTimer.stop();
     m_captureRunning = false;
 
+    stop_worker_threads();
     close_ltr114_capture();
+    close_ltr212_capture();
+
+    if (m_crate && m_crate->is_open()) {
+        m_crate->stop_sync_marks();
+        appendInfo("Синхрометки остановлены");
+    }
 
     if (saveToFileCheck->isChecked()) {
         if (!append_samples_to_file(m_pendingFileSamples)) {
@@ -484,46 +694,13 @@ void MainWindow::on_stop_capture_clicked()
     appendInfo("Сбор остановлен пользователем.");
 }
 
-void MainWindow::poll_ltr114_data()
+void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples)
 {
-    if (!m_captureRunning || !m_ltr114)
+    if (voltageSamples.isEmpty())
         return;
-
-    int error = 0;
-    QVector<DWORD> data = m_ltr114->receive_data(static_cast<DWORD>(chunkSizeSpin->value()), &error);
-
-    if (error != 0) {
-        appendInfo(QString("LTR114: ошибка приёма данных: %1").arg(error), true);
-        on_stop_capture_clicked();
-        return;
-    }
-
-    if (data.isEmpty())
-        return;
-
-    QVector<double> proc_data(data.size());
-    QVector<double> therm_data(data.size());
-    INT proc_size = data.size();
-    INT therm_count = 0;
-
-    INT proc_result = LTR114_ProcessDataTherm(
-        m_ltr114->handle(),
-        data.data(),
-        proc_data.data(),
-        therm_data.data(),
-        &proc_size,
-        &therm_count,
-        LTR114_CORRECTION_MODE_INIT,
-        LTR114_PROCF_VALUE);
-
-    if (proc_result != LTR_OK) {
-        appendInfo(QString("LTR114: ошибка обработки данных: %1").arg(proc_result), true);
-        return;
-    }
 
     const int everyN = qMax(1, plotEverySpin->value());
-    for (int i = 0; i < therm_count; ++i) {
-        const double voltageV = therm_data[i];
+    for (double voltageV : voltageSamples) {
         ++m_tickCounter;
         m_allSamples.append(qMakePair(m_tickCounter, voltageV));
         m_pendingFileSamples.append(qMakePair(m_tickCounter, voltageV));
@@ -551,13 +728,58 @@ void MainWindow::poll_ltr114_data()
     refresh_plot();
 }
 
+QVector<double> MainWindow::generate_simulated_samples()
+{
+    QVector<double> samples;
+    const double sampleRate = static_cast<double>(qMax(1, m_simulatedSampleRate));
+    const double timerPeriodSec = 0.03;
+    m_simulatedSampleAccumulator += sampleRate * timerPeriodSec;
+
+    int samplesToGenerate = static_cast<int>(m_simulatedSampleAccumulator);
+    m_simulatedSampleAccumulator -= samplesToGenerate;
+
+    if (samplesToGenerate <= 0)
+        return samples;
+
+    samples.reserve(samplesToGenerate);
+    const double dt = 1.0 / sampleRate;
+    const double freq1 = qMin(5.0, sampleRate / 20.0);
+    const double freq2 = qMin(13.0, sampleRate / 12.0);
+    constexpr double pi = 3.14159265358979323846;
+
+    for (int i = 0; i < samplesToGenerate; ++i) {
+        const double t = (static_cast<double>(m_simulatedSignalTick) + static_cast<double>(i) + 1.0) * dt;
+        const double signal = 0.0012 * std::sin(2.0 * pi * freq1 * t)
+                            + 0.00045 * std::sin(2.0 * pi * freq2 * t + 0.8)
+                            + 0.00015 * std::sin(2.0 * pi * 0.35 * t);
+        samples.append(signal);
+    }
+
+    m_simulatedSignalTick += static_cast<quint64>(samplesToGenerate);
+    return samples;
+}
+
 void MainWindow::init_ltr()
 {
     appendInfo("Начало поиска крейтов...");
 
     auto crates = Crate::enumerate_crates();
     if (crates.isEmpty()) {
-        appendInfo("Нет подключенных крейтов", true);
+        m_simulationMode = true;
+        m_crateSerial = "SIMULATED_CRATE";
+        m_ltr114Slot = 1;
+
+        appendInfo("Нет подключенных крейтов. Включен режим симуляции.", true);
+
+        QWidget* w = createModuleItemWidget(1, "LTR114 (SIM)", true);
+        QListWidgetItem* it = new QListWidgetItem(modulesList);
+        it->setSizeHint(w->sizeHint());
+        modulesList->addItem(it);
+        modulesList->setItemWidget(it, w);
+        moduleWidgets.insert(1, w);
+
+        appendInfo("Симулированный крейт создан, модуль LTR114 виртуально доступен в слоте 1.");
+        run_ltr114_module(m_crateSerial, m_ltr114Slot);
         return;
     }
 
@@ -569,8 +791,8 @@ void MainWindow::init_ltr()
 
     m_crate = std::make_unique<Crate>(crate_sn);
     if (!m_crate->is_open()) {
-        appendInfo("Не удалось открыть крейт", true);
-        m_crate.reset();
+        appendInfo("Соединение с крейтом оставлено открытым для синхрометок", true);
+        // m_crate.reset();
         return;
     }
     appendInfo("Крейт успешно открыт.");
@@ -618,13 +840,61 @@ void MainWindow::init_ltr()
     }
 
     if (ltr114_slot != -1) {
-        appendInfo(QString("Модуль LTR114 найден в слоте %1").arg(ltr114_slot));
+        appendInfo(QString("LTR114 IN SLOT %1").arg(ltr114_slot));
         run_ltr114_module(crate_sn, ltr114_slot);
     } else {
-        appendInfo("Модуль LTR114 не найден", true);
+        appendInfo("LTR114 error", true);
         startButton->setEnabled(false);
     }
 
-    m_crate.reset();
-    appendInfo("Поиск модулей завершён. Соединение с крейтом закрыто до старта.");
+    int ltr212_slot = -1;
+    for (const auto& mod : modules) {
+        if (mod.second == LTR_MID_LTR212 && ltr212_slot == -1)
+            ltr212_slot = mod.first;
+    }
+
+    if (ltr212_slot != -1) {
+        appendInfo(QString("LTR212 найден в слоте %1").arg(ltr212_slot));
+        run_ltr212_module(crate_sn, ltr212_slot);
+    }
+
+    appendInfo("Поиск модулей завершён. Соединение с крейтом оставлено открытым для синхрометок.");
+}
+
+
+void MainWindow::stop_worker_threads()
+{
+    if (m_ltr114Worker) {
+        QMetaObject::invokeMethod(m_ltr114Worker, "stopAcquisition", Qt::QueuedConnection);
+    }
+    if (m_ltr212Worker) {
+        QMetaObject::invokeMethod(m_ltr212Worker, "stopAcquisition", Qt::QueuedConnection);
+    }
+    if (m_simulationWorker) {
+        QMetaObject::invokeMethod(m_simulationWorker, "stopAcquisition", Qt::QueuedConnection);
+    }
+
+    if (m_ltr114Thread) {
+        m_ltr114Thread->quit();
+        m_ltr114Thread->wait();
+        m_ltr114Thread->deleteLater();
+        m_ltr114Thread = nullptr;
+        m_ltr114Worker = nullptr;
+    }
+
+    if (m_ltr212Thread) {
+        m_ltr212Thread->quit();
+        m_ltr212Thread->wait();
+        m_ltr212Thread->deleteLater();
+        m_ltr212Thread = nullptr;
+        m_ltr212Worker = nullptr;
+    }
+
+    if (m_simulationThread) {
+        m_simulationThread->quit();
+        m_simulationThread->wait();
+        m_simulationThread->deleteLater();
+        m_simulationThread = nullptr;
+        m_simulationWorker = nullptr;
+    }
 }

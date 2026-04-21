@@ -23,6 +23,10 @@ public:
     void set_sync_mode(DWORD sync_mode);
     void set_interval(DWORD interval);
 
+    // === НОВОЕ: приём с синхрометками ===
+    QPair<QVector<DWORD>, QVector<DWORD>> receive_data_with_marks(
+        DWORD timeout, int* error_code = nullptr);
+
     QString module_name() const { return QString::fromLatin1(m_handle.ModuleInfo.Name); }
     QString module_serial() const { return QString::fromLatin1(m_handle.ModuleInfo.Serial); }
 
