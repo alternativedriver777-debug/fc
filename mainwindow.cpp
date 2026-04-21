@@ -88,7 +88,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     stop_worker_threads();
-    close_capture_file();
+    close_capture_files();
     close_ltr114_capture();
     close_ltr212_capture();
     delete ui;
@@ -488,64 +488,83 @@ QString MainWindow::current_unit_name() const
     return (unitCombo && unitCombo->currentData().toString() == "V") ? "V" : "mV";
 }
 
-bool MainWindow::open_capture_file()
+bool MainWindow::open_capture_file(int moduleId)
 {
-    if (m_captureFile)
+    QFile*& targetFile = (moduleId == 1) ? m_captureFile212 : m_captureFile;
+    QTextStream*& targetStream = (moduleId == 1) ? m_captureStream212 : m_captureStream;
+    QString& targetPath = (moduleId == 1) ? m_captureFilePath212 : m_captureFilePath;
+    const QString moduleName = (moduleId == 1) ? "LTR212" : "LTR114";
+
+    if (targetFile)
         return true;
 
-    m_captureFilePath = QString("ltr_capture_%1.txt")
-                            .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    targetPath = QString("ltr_capture_%1_%2.txt")
+                     .arg(moduleName.toLower())
+                     .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
 
-    m_captureFile = new QFile(m_captureFilePath);
-    if (!m_captureFile->open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        appendInfo(QString("Не удалось открыть файл %1 для записи").arg(m_captureFilePath), true);
-        delete m_captureFile;
-        m_captureFile = nullptr;
+    targetFile = new QFile(targetPath);
+    if (!targetFile->open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        appendInfo(QString("Не удалось открыть файл %1 для записи").arg(targetPath), true);
+        delete targetFile;
+        targetFile = nullptr;
         return false;
     }
 
-    m_captureStream = new QTextStream(m_captureFile);
-    (*m_captureStream) << sampleRateSpin->value() << "    " << current_unit_name() << "    LTR114\n";
-    m_captureStream->flush();
+    targetStream = new QTextStream(targetFile);
+    (*targetStream) << sampleRateSpin->value() << "    " << current_unit_name() << "    " << moduleName << "\n";
+    targetStream->flush();
     return true;
 }
 
-bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& samples)
+bool MainWindow::append_samples_to_file(const QVector<QPair<quint64, double>>& samples, int moduleId)
 {
     if (samples.isEmpty())
         return true;
 
-    if (!open_capture_file() || !m_captureStream || !m_captureFile)
+    QFile*& targetFile = (moduleId == 1) ? m_captureFile212 : m_captureFile;
+    QTextStream*& targetStream = (moduleId == 1) ? m_captureStream212 : m_captureStream;
+
+    if (!open_capture_file(moduleId) || !targetStream || !targetFile)
         return false;
 
     const double factor = current_unit_factor();
     const int precision = current_unit_name() == "V" ? 9 : 3;
 
     for (const auto& sample : samples) {
-        (*m_captureStream) << sample.first << "    " << QString::number(sample.second * factor, 'f', precision) << "\n";
+        (*targetStream) << sample.first << "    " << QString::number(sample.second * factor, 'f', precision) << "\n";
     }
 
-    m_captureStream->flush();
-    return (m_captureStream->status() == QTextStream::Ok);
+    targetStream->flush();
+    return (targetStream->status() == QTextStream::Ok);
 }
 
-void MainWindow::close_capture_file()
+void MainWindow::close_capture_file(int moduleId)
 {
-    if (m_captureStream) {
-        m_captureStream->flush();
-        delete m_captureStream;
-        m_captureStream = nullptr;
+    QTextStream*& targetStream = (moduleId == 1) ? m_captureStream212 : m_captureStream;
+    QFile*& targetFile = (moduleId == 1) ? m_captureFile212 : m_captureFile;
+    QString& targetPath = (moduleId == 1) ? m_captureFilePath212 : m_captureFilePath;
+
+    if (targetStream) {
+        targetStream->flush();
+        delete targetStream;
+        targetStream = nullptr;
     }
 
-    if (m_captureFile) {
-        m_captureFile->close();
-        delete m_captureFile;
-        m_captureFile = nullptr;
-        if (!m_captureFilePath.isEmpty()) {
-            appendInfo(QString("Файл сохранён: %1").arg(m_captureFilePath));
-            m_captureFilePath.clear();
+    if (targetFile) {
+        targetFile->close();
+        delete targetFile;
+        targetFile = nullptr;
+        if (!targetPath.isEmpty()) {
+            appendInfo(QString("Файл сохранён: %1").arg(targetPath));
+            targetPath.clear();
         }
     }
+}
+
+void MainWindow::close_capture_files()
+{
+    close_capture_file(0);
+    close_capture_file(1);
 }
 
 void MainWindow::setup_crate_sync()
@@ -569,15 +588,22 @@ void MainWindow::on_start_capture_clicked()
     m_allSamples.clear();
     m_plotPoints.clear();
     m_plotPoints212.clear();
-    m_pendingFileSamples.clear();
+    m_pendingFileSamples114.clear();
+    m_pendingFileSamples212.clear();
     m_tickCounter = 0;
     m_tickCounter212 = 0;
     refresh_plot();
 
-    if (saveToFileCheck->isChecked() && !open_capture_file())
-        return;
-
     if (m_simulationMode) {
+        if (saveToFileCheck->isChecked()) {
+            if (!open_capture_file(0))
+                return;
+            if (m_simulateTwoModules && !open_capture_file(1)) {
+                close_capture_file(0);
+                return;
+            }
+        }
+
         m_captureRunning = true;
         m_simulatedSampleRate = qMax(1, sampleRateSpin->value());
         m_simulatedSampleAccumulator = 0.0;
@@ -632,8 +658,22 @@ void MainWindow::on_start_capture_clicked()
 
     if (!success) {
         appendInfo("Ни LTR114, ни LTR212 не удалось запустить!", true);
-        close_capture_file();
+        close_capture_files();
         return;
+    }
+
+    if (saveToFileCheck->isChecked()) {
+        if (m_usingLtr114 && !open_capture_file(0)) {
+            close_ltr114_capture();
+            close_ltr212_capture();
+            return;
+        }
+        if (m_usingLtr212 && !open_capture_file(1)) {
+            close_ltr114_capture();
+            close_ltr212_capture();
+            close_capture_file(0);
+            return;
+        }
     }
 
     m_syncState.needSynchronization = (m_usingLtr114 && m_usingLtr212);
@@ -714,11 +754,15 @@ void MainWindow::on_stop_capture_clicked()
     }
 
     if (saveToFileCheck->isChecked()) {
-        if (!append_samples_to_file(m_pendingFileSamples)) {
+        if (!append_samples_to_file(m_pendingFileSamples114, 0)) {
             appendInfo("Ошибка дозаписи данных в файл.", true);
         }
-        m_pendingFileSamples.clear();
-        close_capture_file();
+        if (!append_samples_to_file(m_pendingFileSamples212, 1)) {
+            appendInfo("Ошибка дозаписи данных в файл LTR212.", true);
+        }
+        m_pendingFileSamples114.clear();
+        m_pendingFileSamples212.clear();
+        close_capture_files();
     } else {
         appendInfo("Сохранение файла отключено пользователем.");
     }
@@ -740,23 +784,25 @@ void MainWindow::process_voltage_samples(const QVector<double>& voltageSamples, 
     quint64& moduleTickCounter = (moduleId == 1) ? m_tickCounter212 : m_tickCounter;
     QVector<QPointF>& modulePlotPoints = (moduleId == 1) ? m_plotPoints212 : m_plotPoints;
 
+    QVector<QPair<quint64, double>>& modulePendingFileSamples = (moduleId == 1) ? m_pendingFileSamples212 : m_pendingFileSamples114;
+
     for (double voltageV : voltageSamples) {
         ++moduleTickCounter;
         m_allSamples.append(qMakePair(moduleTickCounter, voltageV));
-        m_pendingFileSamples.append(qMakePair(moduleTickCounter, voltageV));
+        modulePendingFileSamples.append(qMakePair(moduleTickCounter, voltageV));
 
         if ((moduleTickCounter % static_cast<quint64>(everyN)) == 0) {
             modulePlotPoints.append(QPointF(static_cast<qreal>(moduleTickCounter), voltageV));
         }
     }
 
-    if (saveToFileCheck->isChecked() && !m_pendingFileSamples.isEmpty()) {
+    if (saveToFileCheck->isChecked() && !modulePendingFileSamples.isEmpty()) {
         const int flushEverySamples = qMax(1, sampleRateSpin->value());
-        if (m_pendingFileSamples.size() >= flushEverySamples) {
-            if (!append_samples_to_file(m_pendingFileSamples)) {
+        if (modulePendingFileSamples.size() >= flushEverySamples) {
+            if (!append_samples_to_file(modulePendingFileSamples, moduleId)) {
                 appendInfo("Ошибка записи в файл во время сбора.", true);
             }
-            m_pendingFileSamples.clear();
+            modulePendingFileSamples.clear();
         }
     }
 
