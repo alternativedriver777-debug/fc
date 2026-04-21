@@ -6,7 +6,6 @@
 #include <QVector>
 #include <QString>
 #include <atomic>
-#include <functional>
 
 #include "LTR/ltrapi.h"
 #include "LTR/ltr114api.h"
@@ -74,26 +73,5 @@ private:
     std::atomic_bool m_running{false};
 };
 
-
-class SimulationWorker : public QObject
-{
-    Q_OBJECT
-public:
-    using Generator = std::function<QVector<double>()>;
-
-    explicit SimulationWorker(Generator generator, QObject* parent = nullptr);
-
-public slots:
-    void run();
-    void stopAcquisition();
-
-signals:
-    void newVoltageSamples(const QVector<double>& voltageSamples);
-    void finished();
-
-private:
-    Generator m_generator;
-    std::atomic_bool m_running{false};
-};
 
 #endif // LTR_WORKERS_H

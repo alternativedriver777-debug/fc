@@ -561,21 +561,19 @@ void MainWindow::on_start_capture_clicked()
         sampleRateSpin->setEnabled(false);
         unitCombo->setEnabled(false);
 
-        m_simulationThread = new QThread(this);
-        m_simulationWorker = new SimulationWorker([this]() {
-            return generate_simulated_samples();
-        });
-        m_simulationWorker->moveToThread(m_simulationThread);
-
-        connect(m_simulationThread, &QThread::started, m_simulationWorker, &SimulationWorker::run);
-        connect(m_simulationWorker, &SimulationWorker::newVoltageSamples, this, &MainWindow::process_voltage_samples, Qt::QueuedConnection);
-        connect(m_simulationWorker, &SimulationWorker::finished, m_simulationThread, &QThread::quit);
-        connect(m_simulationThread, &QThread::finished, m_simulationWorker, &QObject::deleteLater);
+        if (!m_simulationTimer) {
+            m_simulationTimer = new QTimer(this);
+            connect(m_simulationTimer, &QTimer::timeout, this, [this]() {
+                if (m_captureRunning && m_simulationMode) {
+                    process_voltage_samples(generate_simulated_samples());
+                }
+            });
+        }
 
         m_usingLtr114 = false;
         m_usingLtr212 = false;
-        appendInfo("Симуляция запущена в выделенном потоке.");
-        m_simulationThread->start();
+        m_simulationTimer->start(30);
+        appendInfo("Симуляция запущена через QTimer.");
         return;
     }
 
@@ -666,6 +664,9 @@ void MainWindow::on_stop_capture_clicked()
     if (!m_captureRunning) return;
 
     m_captureRunning = false;
+    if (m_simulationTimer) {
+        m_simulationTimer->stop();
+    }
 
     stop_worker_threads();
     close_ltr114_capture();
@@ -870,9 +871,6 @@ void MainWindow::stop_worker_threads()
     if (m_ltr212Worker) {
         QMetaObject::invokeMethod(m_ltr212Worker, "stopAcquisition", Qt::QueuedConnection);
     }
-    if (m_simulationWorker) {
-        QMetaObject::invokeMethod(m_simulationWorker, "stopAcquisition", Qt::QueuedConnection);
-    }
 
     if (m_ltr114Thread) {
         m_ltr114Thread->quit();
@@ -888,13 +886,5 @@ void MainWindow::stop_worker_threads()
         m_ltr212Thread->deleteLater();
         m_ltr212Thread = nullptr;
         m_ltr212Worker = nullptr;
-    }
-
-    if (m_simulationThread) {
-        m_simulationThread->quit();
-        m_simulationThread->wait();
-        m_simulationThread->deleteLater();
-        m_simulationThread = nullptr;
-        m_simulationWorker = nullptr;
     }
 }
