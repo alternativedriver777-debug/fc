@@ -11,7 +11,9 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QComboBox>
+#include <QFormLayout>
 #include <QFile>
+#include <QGroupBox>
 #include <QTextStream>
 #include <QtCharts/QChart>
 #include <QtCharts/QChartView>
@@ -63,7 +65,6 @@ MainWindow::MainWindow(QWidget *parent)
     , chartView(nullptr)
     , chart(nullptr)
     , lineSeries(nullptr)
-    , lineSeries212(nullptr)
     , axisX(nullptr)
     , axisY(nullptr)
     , m_ltr114Slot(-1)
@@ -148,7 +149,48 @@ void MainWindow::init_ui_replace()
     controlLay->addWidget(new QLabel("Единицы:", this));
     controlLay->addWidget(unitCombo);
 
+    m_openLtr212ChartBtn = new QPushButton("Открыть график LTR212", this);
+    m_openLtr212ChartBtn->setEnabled(false);
+    controlLay->addWidget(m_openLtr212ChartBtn);
+
     rightLay->addLayout(controlLay);
+
+    m_ltr212SettingsGroup = new QGroupBox("Настройки LTR212", this);
+    QFormLayout* ltr212Form = new QFormLayout(m_ltr212SettingsGroup);
+
+    m_acqModeCombo = new QComboBox(this);
+    m_acqModeCombo->addItem("4 канала, высокое разрешение", LTR212_FOUR_CHANNELS_WITH_HIGH_RESOLUTION);
+    m_acqModeCombo->addItem("8 каналов", 0);
+    ltr212Form->addRow("Режим АЦП:", m_acqModeCombo);
+
+    m_refVoltageCombo = new QComboBox(this);
+    m_refVoltageCombo->addItem("5 В", LTR212_REF_5V);
+#ifdef LTR212_REF_2_5V
+    m_refVoltageCombo->addItem("2.5 В", LTR212_REF_2_5V);
+#endif
+    ltr212Form->addRow("Опорное напряжение:", m_refVoltageCombo);
+
+    m_acModeCombo = new QComboBox(this);
+    m_acModeCombo->addItem("DC (постоянное)", 0);
+    m_acModeCombo->addItem("AC (переменное)", 1);
+    ltr212Form->addRow("Режим:", m_acModeCombo);
+
+    m_ltr212ChCountSpin = new QSpinBox(this);
+    m_ltr212ChCountSpin->setRange(1, 8);
+    m_ltr212ChCountSpin->setValue(1);
+    ltr212Form->addRow("Кол-во лог. каналов:", m_ltr212ChCountSpin);
+
+    m_ltr212RangeCombo = new QComboBox(this);
+    m_ltr212RangeCombo->addItem("±80 мВ", LTR212_SCALE_B_80);
+    m_ltr212RangeCombo->addItem("±40 мВ", LTR212_SCALE_B_40);
+    m_ltr212RangeCombo->addItem("±20 мВ", LTR212_SCALE_B_20);
+#ifdef LTR212_SCALE_B_10
+    m_ltr212RangeCombo->addItem("±10 мВ", LTR212_SCALE_B_10);
+#endif
+    ltr212Form->addRow("Диапазон канала 1:", m_ltr212RangeCombo);
+
+    rightLay->addWidget(m_ltr212SettingsGroup);
+    m_ltr212SettingsGroup->setVisible(false);
 
     infoText = new QTextEdit(this);
     infoText->setReadOnly(true);
@@ -165,9 +207,14 @@ void MainWindow::init_ui_replace()
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::on_start_capture_clicked);
     connect(stopButton, &QPushButton::clicked, this, &MainWindow::on_stop_capture_clicked);
+    connect(m_openLtr212ChartBtn, &QPushButton::clicked, this, &MainWindow::openLtr212PlotWindow);
     connect(unitCombo, &QComboBox::currentTextChanged, this, [this](const QString&) {
         axisY->setTitleText(QString("Напряжение, %1").arg(current_unit_name()));
         axisY->setLabelFormat(current_unit_name() == "V" ? "%.6f" : "%.3f");
+        if (m_ltr212AxisY) {
+            m_ltr212AxisY->setTitleText(QString("Напряжение, %1").arg(current_unit_name()));
+            m_ltr212AxisY->setLabelFormat(current_unit_name() == "V" ? "%.6f" : "%.3f");
+        }
         refresh_plot();
     });
 
@@ -177,17 +224,13 @@ void MainWindow::init_ui_replace()
 void MainWindow::setup_plot()
 {
     lineSeries = new QLineSeries(this);
-    lineSeries212 = new QLineSeries(this);
     lineSeries->setName("LTR114");
-    lineSeries212->setName("LTR212");
     lineSeries->setColor(Qt::blue);
-    lineSeries212->setColor(Qt::red);
 
     chart = new QChart();
     chart->addSeries(lineSeries);
-    chart->addSeries(lineSeries212);
     chart->legend()->setVisible(true);
-    chart->setTitle("LTR: Тики / Напряжение");
+    chart->setTitle("LTR114: Тики / Напряжение");
 
     axisX = new QValueAxis();
     axisX->setTitleText("Тики");
@@ -203,8 +246,6 @@ void MainWindow::setup_plot()
     chart->addAxis(axisY, Qt::AlignLeft);
     lineSeries->attachAxis(axisX);
     lineSeries->attachAxis(axisY);
-    lineSeries212->attachAxis(axisX);
-    lineSeries212->attachAxis(axisY);
 
     chartView = new QChartView(chart, this);
     chartView->setMinimumHeight(280);
@@ -382,24 +423,26 @@ bool MainWindow::open_ltr212_for_capture()
         return false;
     }
 
-    // ПРАВИЛЬНАЯ КОНФИГУРАЦИЯ
-    m_ltr212->set_size();                    // вызывается в open(), но на всякий случай (!!!!!)
-    m_ltr212->set_acq_mode(LTR212_FOUR_CHANNELS_WITH_HIGH_RESOLUTION); // 1 — норм
-    m_ltr212->set_use_clb(0);                // не используем пользовательскую калибровку
-    m_ltr212->set_use_fabric_clb(1);         // заводские коэффициенты
-    m_ltr212->set_ref_voltage(LTR212_REF_5V); // 1 = 5 В (для большинства датчиков)
-    m_ltr212->set_ac_mode(0);                // 0 = DC (постоянное напряжение)
+    m_ltr212->set_size();
+    const INT acqMode = m_acqModeCombo ? m_acqModeCombo->currentData().toInt()
+                                       : static_cast<INT>(LTR212_FOUR_CHANNELS_WITH_HIGH_RESOLUTION);
+    const INT refVolt = m_refVoltageCombo ? m_refVoltageCombo->currentData().toInt()
+                                          : static_cast<INT>(LTR212_REF_5V);
+    const INT acMode = m_acModeCombo ? m_acModeCombo->currentData().toInt() : 0;
+    const int ch_count = m_ltr212ChCountSpin ? m_ltr212ChCountSpin->value() : 1;
+    const INT scale = m_ltr212RangeCombo ? m_ltr212RangeCombo->currentData().toInt()
+                                         : static_cast<INT>(LTR212_SCALE_B_80);
 
-    // === ЛОГИЧЕСКИЕ КАНАЛЫ — САМЫЙ ВАЖНЫЙ МОМЕНТ ===
-    const int ch_count = 1;                  // сколько каналов нужно (1–8)
+    m_ltr212->set_acq_mode(acqMode);
+    m_ltr212->set_use_clb(0);
+    m_ltr212->set_use_fabric_clb(1);
+    m_ltr212->set_ref_voltage(refVolt);
+    m_ltr212->set_ac_mode(acMode);
+
     INT ch_table[8] = {};
-
-    //  физический канал 1, диапазон ±80 мВ
-    ch_table[0] = LTR212_CreateLChannel(1, LTR212_SCALE_B_80);
-
-    // Если нужно несколько каналов
-    // ch_table[1] = LTR212_CreateLChannel(2, LTR212_SCALE_B_40);
-    // ch_table[2] = LTR212_CreateLChannel(3, LTR212_SCALE_B_20); и т.д.
+    for (int i = 0; i < ch_count; ++i) {
+        ch_table[i] = LTR212_CreateLChannel(i + 1, scale);
+    }
 
     m_ltr212->set_logical_channels(ch_count, ch_table);
 
@@ -422,9 +465,11 @@ bool MainWindow::open_ltr212_for_capture()
         return false;
     }
 
-    appendInfo(QString("LTR212 успешно запущен: %1 канал(ов), AcqMode=%2, REF=5V")
+    appendInfo(QString("LTR212 успешно запущен: %1 канал(ов), AcqMode=%2, REF=%3, AC/DC=%4")
                    .arg(ch_count)
-                   .arg(m_ltr212->handle()->AcqMode));
+                   .arg(acqMode)
+                   .arg(refVolt)
+                   .arg(acMode));
     return true;
 }
 
@@ -455,23 +500,11 @@ void MainWindow::refresh_plot()
         scaledPoints114.append(QPointF(p.x(), p.y() * factor));
     lineSeries->replace(scaledPoints114);
 
-    QVector<QPointF> scaledPoints212;
-    scaledPoints212.reserve(m_plotPoints212.size());
-    for (const QPointF& p : m_plotPoints212)
-        scaledPoints212.append(QPointF(p.x(), p.y() * factor));
-    lineSeries212->replace(scaledPoints212);
-
-    const bool has114 = !scaledPoints114.isEmpty();
-    const bool has212 = !scaledPoints212.isEmpty();
-    if (!has114 && !has212)
+    if (scaledPoints114.isEmpty())
         return;
 
-    qreal firstX = has114 ? scaledPoints114.first().x() : scaledPoints212.first().x();
-    qreal maxX = has114 ? scaledPoints114.last().x() : scaledPoints212.last().x();
-    if (has114 && has212) {
-        firstX = qMin(firstX, scaledPoints212.first().x());
-        maxX = qMax(maxX, scaledPoints212.last().x());
-    }
+    const qreal firstX = scaledPoints114.first().x();
+    const qreal maxX = scaledPoints114.last().x();
 
     const qreal minWindowX = qMax<qreal>(1.0, maxX - static_cast<qreal>(PLOT_WINDOW_TICKS) + 1.0);
     const qreal minX = qMax(firstX, minWindowX);
@@ -479,8 +512,6 @@ void MainWindow::refresh_plot()
 
     qreal maxAbsV = (current_unit_name() == "V") ? 0.001 : 1.0;
     for (const QPointF& p : scaledPoints114)
-        maxAbsV = qMax(maxAbsV, std::abs(p.y()));
-    for (const QPointF& p : scaledPoints212)
         maxAbsV = qMax(maxAbsV, std::abs(p.y()));
 
     const qreal margin = maxAbsV * 0.1;
@@ -602,7 +633,8 @@ void MainWindow::on_start_capture_clicked()
 
     m_allSamples.clear();
     m_plotPoints.clear();
-    m_plotPoints212.clear();
+    m_plotPoints212Dedicated.clear();
+    m_ltr212PlotCounter = 0;
     m_pendingFileSamples114.clear();
     m_pendingFileSamples212.clear();
     refresh_plot();
@@ -635,7 +667,9 @@ void MainWindow::on_start_capture_clicked()
                 if (m_captureRunning && m_simulationMode) {
                     process_voltage_samples(generate_simulated_samples(0), 0);
                     if (m_simulateTwoModules) {
-                        process_voltage_samples(generate_simulated_samples(1), 1);
+                        const auto samples212 = generate_simulated_samples(1);
+                        process_voltage_samples(samples212, 1);
+                        updateLtr212SeparatePlot(samples212);
                     }
                 }
             });
@@ -742,6 +776,8 @@ void MainWindow::on_start_capture_clicked()
         connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples, this, [this](const QVector<TimedSample>& samples) {
             process_voltage_samples(samples, 1);
         }, Qt::QueuedConnection);
+        connect(m_ltr212Worker, &Ltr212Worker::newVoltageSamples,
+                this, &MainWindow::updateLtr212SeparatePlot, Qt::QueuedConnection);
         connect(m_ltr212Worker, &Ltr212Worker::acquisitionError, this, [this](const QString& error) {
             appendInfo(error, true);
             QMetaObject::invokeMethod(this, "on_stop_capture_clicked", Qt::QueuedConnection);
@@ -790,6 +826,9 @@ void MainWindow::on_stop_capture_clicked()
     sampleRateSpin->setEnabled(true);
     unitCombo->setEnabled(true);
 
+    if (m_ltr212PlotWindow)
+        m_ltr212PlotWindow->close();
+
     appendInfo("Сбор остановлен пользователем.");
 }
 
@@ -799,16 +838,14 @@ void MainWindow::process_voltage_samples(const QVector<TimedSample>& voltageSamp
         return;
 
     const int everyN = qMax(1, plotEverySpin->value());
-    QVector<QPointF>& modulePlotPoints = (moduleId == 1) ? m_plotPoints212 : m_plotPoints;
-
     QVector<TimedSample>& modulePendingFileSamples = (moduleId == 1) ? m_pendingFileSamples212 : m_pendingFileSamples114;
 
     for (const TimedSample& sample : voltageSamples) {
         m_allSamples.append(sample);
         modulePendingFileSamples.append(sample);
 
-        if ((sample.globalTick % static_cast<quint64>(everyN)) == 0) {
-            modulePlotPoints.append(QPointF(static_cast<qreal>(sample.globalTick), sample.value));
+        if (moduleId == 0 && (sample.globalTick % static_cast<quint64>(everyN)) == 0) {
+            m_plotPoints.append(QPointF(static_cast<qreal>(sample.globalTick), sample.value));
         }
     }
 
@@ -822,12 +859,13 @@ void MainWindow::process_voltage_samples(const QVector<TimedSample>& voltageSamp
         }
     }
 
-    const int maxPlotPoints = static_cast<int>(qMax<quint64>(1, PLOT_WINDOW_TICKS / static_cast<quint64>(everyN) + 2));
-    if (modulePlotPoints.size() > maxPlotPoints) {
-        modulePlotPoints.remove(0, modulePlotPoints.size() - maxPlotPoints);
+    if (moduleId == 0) {
+        const int maxPlotPoints = static_cast<int>(qMax<quint64>(1, PLOT_WINDOW_TICKS / static_cast<quint64>(everyN) + 2));
+        if (m_plotPoints.size() > maxPlotPoints) {
+            m_plotPoints.remove(0, m_plotPoints.size() - maxPlotPoints);
+        }
+        refresh_plot();
     }
-
-    refresh_plot();
 }
 
 QVector<TimedSample> MainWindow::generate_simulated_samples(int moduleId)
@@ -970,9 +1008,100 @@ void MainWindow::init_ltr()
     if (ltr212_slot != -1) {
         appendInfo(QString("LTR212 найден в слоте %1").arg(ltr212_slot));
         run_ltr212_module(crate_sn, ltr212_slot);
+        if (m_ltr212SettingsGroup)
+            m_ltr212SettingsGroup->setVisible(true);
+        if (m_openLtr212ChartBtn)
+            m_openLtr212ChartBtn->setEnabled(true);
     }
 
     appendInfo("Поиск модулей завершён. Соединение с крейтом оставлено открытым для синхрометок.");
+}
+
+void MainWindow::openLtr212PlotWindow()
+{
+    if (m_ltr212PlotWindow) {
+        m_ltr212PlotWindow->raise();
+        m_ltr212PlotWindow->activateWindow();
+        return;
+    }
+
+    m_ltr212PlotWindow = new QMainWindow(this);
+    m_ltr212PlotWindow->setAttribute(Qt::WA_DeleteOnClose, true);
+    m_ltr212PlotWindow->setWindowTitle("LTR212 — Отдельный график");
+    m_ltr212PlotWindow->setMinimumSize(800, 500);
+
+    QWidget* central = new QWidget(m_ltr212PlotWindow);
+    QVBoxLayout* lay = new QVBoxLayout(central);
+
+    m_ltr212Chart = new QChart();
+    m_ltr212Series = new QLineSeries(m_ltr212Chart);
+    m_ltr212Series->setName("LTR212");
+    m_ltr212Series->setColor(Qt::red);
+    m_ltr212Chart->addSeries(m_ltr212Series);
+
+    m_ltr212AxisX = new QValueAxis(m_ltr212Chart);
+    m_ltr212AxisX->setTitleText("Виртуальные тики");
+    m_ltr212AxisX->setLabelFormat("%i");
+    m_ltr212AxisY = new QValueAxis(m_ltr212Chart);
+    m_ltr212AxisY->setTitleText(QString("Напряжение, %1").arg(current_unit_name()));
+    m_ltr212AxisY->setLabelFormat(current_unit_name() == "V" ? "%.6f" : "%.3f");
+
+    m_ltr212Chart->addAxis(m_ltr212AxisX, Qt::AlignBottom);
+    m_ltr212Chart->addAxis(m_ltr212AxisY, Qt::AlignLeft);
+    m_ltr212Series->attachAxis(m_ltr212AxisX);
+    m_ltr212Series->attachAxis(m_ltr212AxisY);
+
+    QChartView* view = new QChartView(m_ltr212Chart, central);
+    view->setRenderHint(QPainter::Antialiasing);
+    lay->addWidget(view);
+
+    m_ltr212PlotWindow->setCentralWidget(central);
+    connect(m_ltr212PlotWindow, &QMainWindow::destroyed, this, &MainWindow::closeLtr212PlotWindow);
+    m_ltr212PlotWindow->show();
+}
+
+void MainWindow::updateLtr212SeparatePlot(const QVector<TimedSample>& samples)
+{
+    if (!m_ltr212PlotWindow || !m_ltr212Series || samples.isEmpty())
+        return;
+
+    const int everyN = qMax(1, plotEverySpin->value());
+    const double factor = current_unit_factor();
+    constexpr int MAX_PLOT_POINTS = 5000;
+
+    for (const TimedSample& s : samples) {
+        ++m_ltr212PlotCounter;
+        if (m_ltr212PlotCounter % static_cast<quint64>(everyN) == 0) {
+            m_plotPoints212Dedicated.append(QPointF(static_cast<qreal>(m_ltr212PlotCounter), s.value * factor));
+        }
+    }
+
+    if (m_plotPoints212Dedicated.size() > MAX_PLOT_POINTS) {
+        m_plotPoints212Dedicated.remove(0, m_plotPoints212Dedicated.size() - MAX_PLOT_POINTS);
+    }
+
+    m_ltr212Series->replace(m_plotPoints212Dedicated);
+    if (m_plotPoints212Dedicated.isEmpty())
+        return;
+
+    const qreal maxX = m_plotPoints212Dedicated.last().x();
+    m_ltr212AxisX->setRange(qMax<qreal>(0.0, maxX - 500.0), maxX + 50.0);
+
+    qreal maxAbs = (current_unit_name() == "V") ? 0.001 : 1.0;
+    for (const QPointF& p : qAsConst(m_plotPoints212Dedicated))
+        maxAbs = qMax(maxAbs, qAbs(p.y()));
+    m_ltr212AxisY->setRange(-maxAbs * 1.1, maxAbs * 1.1);
+}
+
+void MainWindow::closeLtr212PlotWindow()
+{
+    m_ltr212PlotWindow = nullptr;
+    m_ltr212Chart = nullptr;
+    m_ltr212Series = nullptr;
+    m_ltr212AxisX = nullptr;
+    m_ltr212AxisY = nullptr;
+    m_plotPoints212Dedicated.clear();
+    m_ltr212PlotCounter = 0;
 }
 
 

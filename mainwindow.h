@@ -54,6 +54,7 @@ class QPushButton;
 class QSpinBox;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QFile;
 class QTextStream;
 
@@ -107,7 +108,6 @@ private:
     QChartView* chartView;
     QChart* chart;
     QLineSeries* lineSeries;
-    QLineSeries* lineSeries212 = nullptr;
     QValueAxis* axisX;
     QValueAxis* axisY;
 
@@ -146,7 +146,23 @@ private:
     quint64 m_simulatedSignalTick212 = 0;
     QTimer* m_simulationTimer = nullptr;
 
-    QVector<QPointF> m_plotPoints212;
+    // === LTR212 настройки (новый блок) ===
+    QGroupBox* m_ltr212SettingsGroup = nullptr;
+    QComboBox* m_acqModeCombo = nullptr;
+    QComboBox* m_refVoltageCombo = nullptr;
+    QComboBox* m_acModeCombo = nullptr;
+    QSpinBox*  m_ltr212ChCountSpin = nullptr;
+    QComboBox* m_ltr212RangeCombo = nullptr;
+
+    QPushButton* m_openLtr212ChartBtn = nullptr;
+
+    QMainWindow* m_ltr212PlotWindow = nullptr;
+    QChart*      m_ltr212Chart = nullptr;
+    QLineSeries* m_ltr212Series = nullptr;
+    QValueAxis*  m_ltr212AxisX = nullptr;
+    QValueAxis*  m_ltr212AxisY = nullptr;
+    QVector<QPointF> m_plotPoints212Dedicated;
+    quint64 m_ltr212PlotCounter = 0;
 
     QMap<int, QWidget*> moduleWidgets;
 
@@ -168,6 +184,9 @@ private:
 private slots:
     void on_start_capture_clicked();
     void on_stop_capture_clicked();
+    void openLtr212PlotWindow();
+    void updateLtr212SeparatePlot(const QVector<TimedSample>& samples);
+    void closeLtr212PlotWindow();
 };
 
 #endif // MAINWINDOW_H
