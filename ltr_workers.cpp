@@ -35,6 +35,9 @@ void Ltr114Worker::run()
         auto [rawData, tmarks] = m_module->receive_data_with_marks(kRecvTimeoutMs, &error);
 
         if (error != 0) {
+            if (!m_running.load()) {
+                break;
+            }
             emit acquisitionError(QString("LTR114: ошибка приёма %1").arg(error));
             break;
         }
@@ -66,6 +69,9 @@ void Ltr114Worker::run()
                                              LTR114_PROCF_VALUE);
 
         if (result != LTR_OK) {
+            if (!m_running.load()) {
+                break;
+            }
             emit acquisitionError(QString("LTR114: ошибка обработки %1").arg(result));
             break;
         }
@@ -231,6 +237,9 @@ void Ltr212Worker::run()
         auto [rawData, tmarks] = m_module->receive_data_with_marks(kRecvTimeoutMs, &error);
 
         if (error != 0) {
+            if (!m_running.load()) {
+                break;
+            }
             emit acquisitionError(QString("LTR212: ошибка приёма %1").arg(error));
             break;
         }
@@ -374,7 +383,7 @@ QVector<TimedSample> Ltr212Worker::remapAndAttachTimeline(const QVector<double>&
     result.reserve(values.size());
     const int timelineSize = timeline.size();
     for (int i = 0; i < values.size(); ++i) {
-        const int idx = qBound(0, (i * timelineSize) / qMax(1, values.size()), timelineSize - 1);
+        const int idx = qMin(i * 2, timelineSize - 1);
         TimedSample sample;
         sample.globalTick = timeline[idx].globalTick;
         sample.startMark = timeline[idx].startMark;
