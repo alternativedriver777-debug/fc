@@ -55,6 +55,7 @@ class QSpinBox;
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
+class QFormLayout;
 class QFile;
 class QTextStream;
 
@@ -105,11 +106,16 @@ private:
     QSpinBox* chunkSizeSpin;
     QCheckBox* saveToFileCheck;
     QComboBox* unitCombo;
-    QChartView* chartView;
-    QChart* chart;
-    QLineSeries* lineSeries;
-    QValueAxis* axisX;
-    QValueAxis* axisY;
+    QChartView* chartView114;
+    QChartView* chartView212;
+    QChart* chart114;
+    QChart* chart212;
+    QLineSeries* lineSeries114;
+    QLineSeries* lineSeries212;
+    QValueAxis* axisX114;
+    QValueAxis* axisY114;
+    QValueAxis* axisX212;
+    QValueAxis* axisY212;
 
     QString m_crateSerial;
     int m_ltr114Slot = -1;
@@ -128,6 +134,7 @@ private:
 
     bool m_captureRunning = false;
     QVector<QPointF> m_plotPoints;
+    QVector<QPointF> m_plotPoints212;
     QVector<TimedSample> m_allSamples;
     QVector<TimedSample> m_pendingFileSamples114;
     QVector<TimedSample> m_pendingFileSamples212;
@@ -149,20 +156,12 @@ private:
     // === LTR212 настройки (новый блок) ===
     QGroupBox* m_ltr212SettingsGroup = nullptr;
     QComboBox* m_acqModeCombo = nullptr;
+    QCheckBox* m_useClb212Check = nullptr;
+    QCheckBox* m_useFabricClb212Check = nullptr;
     QComboBox* m_refVoltageCombo = nullptr;
     QComboBox* m_acModeCombo = nullptr;
     QSpinBox*  m_ltr212ChCountSpin = nullptr;
     QComboBox* m_ltr212RangeCombo = nullptr;
-
-    QPushButton* m_openLtr212ChartBtn = nullptr;
-
-    QMainWindow* m_ltr212PlotWindow = nullptr;
-    QChart*      m_ltr212Chart = nullptr;
-    QLineSeries* m_ltr212Series = nullptr;
-    QValueAxis*  m_ltr212AxisX = nullptr;
-    QValueAxis*  m_ltr212AxisY = nullptr;
-    QVector<QPointF> m_plotPoints212Dedicated;
-    quint64 m_ltr212PlotCounter = 0;
 
     QMap<int, QWidget*> moduleWidgets;
 
@@ -184,9 +183,6 @@ private:
 private slots:
     void on_start_capture_clicked();
     void on_stop_capture_clicked();
-    void openLtr212PlotWindow();
-    void updateLtr212SeparatePlot(const QVector<TimedSample>& samples);
-    void closeLtr212PlotWindow();
 };
 
 #endif // MAINWINDOW_H
